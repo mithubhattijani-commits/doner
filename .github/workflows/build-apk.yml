@@ -68,10 +68,19 @@ jobs:
           "$APKSIGNER" verify --print-certs "$APK" | tee certs.txt
           grep -F "Signer #1 certificate SHA-256 digest: $EXPECTED_SIGNER_SHA256" certs.txt
           echo "VERIFY OK: package/version/label/SDKs/signer all match Doner day-1 key"
-          # Updater manifest URL must be baked into the shipped binary.
-          unzip -p "$APK" lib/arm64-v8a/libapp.so | strings | grep -F "nigraantv.xyz/apps/doner-version.json"
+          # Updater manifest URL must be baked into the shipped code.
+          # DEBUG builds carry Dart code as assets/flutter_assets/
+          # kernel_blob.bin (no libapp.so); release/profile would use
+          # lib/<abi>/libapp.so. Check whichever is present.
+          if unzip -l "$APK" | grep -q "assets/flutter_assets/kernel_blob.bin"; then
+            CODE_BLOB="assets/flutter_assets/kernel_blob.bin"
+          else
+            CODE_BLOB="lib/arm64-v8a/libapp.so"
+          fi
+          echo "Code blob: $CODE_BLOB"
+          unzip -p "$APK" "$CODE_BLOB" | strings | grep -F "nigraantv.xyz/apps/doner-version.json"
           # No Aman package reference may survive the fork.
-          if unzip -p "$APK" lib/arm64-v8a/libapp.so | strings | grep -F "com.amanblood"; then
+          if unzip -p "$APK" "$CODE_BLOB" | strings | grep -F "com.amanblood"; then
             echo "FAIL: com.amanblood reference in binary"; exit 1
           fi
         env:
