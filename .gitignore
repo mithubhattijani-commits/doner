@@ -1,0 +1,9 @@
+build/
+.dart_tool/
+android/local.properties
+*.iml
+
+# Day-1 signing key: decoded in CI from GitHub Actions secrets only.
+*.keystore
+*.jks
+android/key.properties

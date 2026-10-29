@@ -1,0 +1,84 @@
+name: Build Doner APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache || true
+          df -h
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: Restore Gradle wrapper jar (missing from repo)
+        run: |
+          curl -fsSL -o android/gradle/wrapper/gradle-wrapper.jar https://raw.githubusercontent.com/gradle/gradle/v9.3.1/gradle/wrapper/gradle-wrapper.jar
+          ls -lh android/gradle/wrapper/
+      - name: Prepare Android local properties
+        run: |
+          FLUTTER_BIN="$(command -v flutter)"
+          FLUTTER_ROOT="$(dirname "$(dirname "$FLUTTER_BIN")")"
+          printf 'flutter.sdk=%s\n' "$FLUTTER_ROOT" > android/local.properties
+      - name: Get dependencies
+        run: flutter pub get
+      - name: Analyze
+        run: flutter analyze
+      - name: Decode signing keystore
+        # Doner day-1 stable key (fresh keystore, never the Aman/TJ key).
+        # Secrets: KEYSTORE_BASE64, KEYSTORE_STORE_PASSWORD, KEYSTORE_KEY_PASSWORD.
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: echo "$KEYSTORE_BASE64" | base64 -d > android/app/doner.keystore
+      - name: Build debug APK (keystore-signed, uncompressed)
+        # DEBUG ONLY. No --split-per-abi, no shrinking, no compression:
+        # an uncompressed build is mandatory (a compressed build
+        # previously crashed on the user's phone). One universal APK:
+        # the stable release link and the single updater manifest URL
+        # both require one file.
+        env:
+          KEYSTORE_STORE_PASSWORD: ${{ secrets.KEYSTORE_STORE_PASSWORD }}
+          KEYSTORE_KEY_PASSWORD: ${{ secrets.KEYSTORE_KEY_PASSWORD }}
+        run: flutter build apk --debug
+      - name: Verify APK
+        run: |
+          set -e
+          APK=build/app/outputs/flutter-apk/app-debug.apk
+          ls -la "$APK"
+          md5sum "$APK"
+          unzip -t "$APK" | tail -3
+          AAPT2=$(ls "$ANDROID_SDK_ROOT"/build-tools/*/aapt2 | head -1)
+          APKSIGNER=$(ls "$ANDROID_SDK_ROOT"/build-tools/*/apksigner | head -1)
+          "$AAPT2" dump badging "$APK" > badging.txt
+          cat badging.txt
+          grep -F "package: name='com.doner.app' versionCode='1' versionName='1.0.0'" badging.txt
+          grep -F "sdkVersion:'24'" badging.txt
+          grep -F "targetSdkVersion:'36'" badging.txt
+          grep -F "application-label:'Doner'" badging.txt
+          "$APKSIGNER" verify --print-certs "$APK" | tee certs.txt
+          grep -F "Signer #1 certificate SHA-256 digest: $EXPECTED_SIGNER_SHA256" certs.txt
+          echo "VERIFY OK: package/version/label/SDKs/signer all match Doner day-1 key"
+          # Updater manifest URL must be baked into the shipped binary.
+          unzip -p "$APK" lib/arm64-v8a/libapp.so | strings | grep -F "nigraantv.xyz/apps/doner-version.json"
+          # No Aman package reference may survive the fork.
+          if unzip -p "$APK" lib/arm64-v8a/libapp.so | strings | grep -F "com.amanblood"; then
+            echo "FAIL: com.amanblood reference in binary"; exit 1
+          fi
+        env:
+          EXPECTED_SIGNER_SHA256: "f2c17e575f76683c67d316d1de8f140c6521afdacc1c17d64120f78a20aa839e"
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: doner-debug-apk
+          path: build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error

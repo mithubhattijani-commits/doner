@@ -1,0 +1,2897 @@
+// DONER 1.0.0 — fork of the Aman Blood Donor app 1.3.4 source, plus the
+// social home feed (SocialFeedTab below). App label "Doner", package
+// com.doner.app. The society itself is unchanged: same directory,
+// same society facts, same public central contact number.
+// AMAN BLOOD DONOR SOCIETY OF PAKISTAN — Android app (V1.2).
+// Mirrors the society website (aman-blood/dist/index.html): same directory
+// structure, same society facts, same public central contact number.
+// V1.1 adds the in-app updater (same mechanism as TJ Editor V1.2):
+// silent launch check of nigraantv.xyz/apps/doner-version.json
+// plus a manual check button; the updater stays silent until the
+// manifest + stable APK link are published by the parent.
+// V1.2 adds AdMob ads (Jaani 26 Oct 2026, all formats):
+// interstitial on every directory list-item tap, every donor-card
+// WhatsApp tap, and every Call Now tap (uncapped); banner at the
+// bottom of the home + directory screens; native cards inside the
+// directory lists; app-open once per cold start. Rewarded is
+// intentionally unwired (no unlockable feature in Doner).
+// The original action always runs after an interstitial closes,
+// or immediately if no ad is loaded.
+// Honest limitation: the website's live donor records live in its
+// Cloudflare KV store and are NOT bundled here, so the directory shows its
+// full structure with honest empty states plus a local registration flow —
+// no donor is ever invented.
+// V1.3 adds the live society API (services/api_service.dart): the
+// directory shows LIVE public donors (name + group + address only,
+// never phones), registration also posts to the server, the home tab
+// shows a newest-first feed with member-code photo posts, and an
+// admin PIN screen shows the phone list (admin endpoint only, PIN
+// session-only). Camera support needs a full release (native plugin),
+// so 1.3.0+7 is NOT a Shorebird patch. The update nag is fixed:
+// a dismissed version never re-prompts on launch, and the launch
+// download now runs in the background with a single install prompt.
+// V1.2.2 adds server-driven remote config (services/config_service.dart):
+// home contacts, announcement banner, all InfoTab texts and the
+// donorCard/compatibility/directory feature flags come from
+// nigraantv.xyz/apps/doner-config.json, cached locally, fail-soft.
+// The manifest updater above stays as the full-release path.
+// V1.3.x adds progress visibility (Jaani 27 Oct 2026 standing rule):
+// every user-visible process shows live progress — real % for the APK
+// download and photo uploads, live Urdu status text for server waits.
+// No silent screens, no fake timer percentages.
+
+import 'dart:convert';
+
+import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
+
+import 'data.dart';
+import 'services/ad_service.dart';
+import 'services/api_service.dart';
+import 'services/config_service.dart';
+import 'services/update_service.dart';
+
+// ---- Society's public contact (published on the website itself) ----
+const String centralDisplay = '0300 4927940';
+const String centralTel = '+923004927940';
+const String centralWa = '923004927940';
+const String spokesmanDisplay = '0309 0808180';
+const String spokesmanTel = '+923090808180';
+const String spokesmanWa = '923090808180';
+const String societyName = 'امن بلڈ ڈونر سوسائٹی آف پاکستان';
+const String societyNameEn = 'AMAN BLOOD DONOR SOCIETY OF PAKISTAN';
+
+Future<void> callNumber(String tel) async {
+  final uri = Uri(scheme: 'tel', path: tel);
+  if (await canLaunchUrl(uri)) {
+    await launchUrl(uri);
+  }
+}
+
+Future<void> callCentral() => callNumber(centralTel);
+
+Future<void> whatsappNumber(String wa, [String? message]) async {
+  final text = message ??
+      'السلام علیکم! مجھے خون کے حوالے سے مدد چاہیے۔';
+  final uri = Uri.parse(
+      'https://wa.me/$wa?text=${Uri.encodeComponent(text)}');
+  if (await canLaunchUrl(uri)) {
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+}
+
+Future<void> whatsappCentral([String? message]) =>
+    whatsappNumber(centralWa, message);
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await AdService.init();
+  await ConfigService.loadFromCache();
+  runApp(const DonerApp());
+  // Launch fetch: refreshes content in the background. On any failure
+  // the cached/default config stays in place (fail-soft, silent).
+  ConfigService.refresh();
+}
+
+class DonerApp extends StatelessWidget {
+  const DonerApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Doner',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFFC8102E),
+          primary: const Color(0xFFC8102E),
+        ),
+        useMaterial3: true,
+        fontFamily: null,
+      ),
+      home: const Directionality(
+        textDirection: TextDirection.rtl,
+        child: HomeShell(),
+      ),
+    );
+  }
+}
+
+class HomeShell extends StatefulWidget {
+  const HomeShell({super.key});
+
+  @override
+  State<HomeShell> createState() => _HomeShellState();
+}
+
+class _HomeShellState extends State<HomeShell> {
+  int _tab = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    AdService.showAppOpenOnce();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) UpdateService.checkOnLaunch(context);
+    });
+  }
+
+  // Tabs are built dynamically in build() so features.directory=false
+  // hides the Directory tab instead of leaving a dead section.
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<DonerConfig>(
+      valueListenable: ConfigService.notifier,
+      builder: (context, config, _) {
+        final tabs = <Widget>[const HomeTab()];
+        final items = <BottomNavigationBarItem>[
+          const BottomNavigationBarItem(icon: Icon(Icons.home), label: 'ہوم'),
+        ];
+        tabs.add(const SocialFeedTab());
+        items.add(const BottomNavigationBarItem(
+            icon: Icon(Icons.dynamic_feed), label: 'سوشل فیڈ'));
+        if (config.directory) {
+          tabs.add(const DirectoryTab());
+          items.add(const BottomNavigationBarItem(
+              icon: Icon(Icons.search), label: 'ڈائریکٹری'));
+        }
+        tabs.add(const RegisterTab());
+        items.add(const BottomNavigationBarItem(
+            icon: Icon(Icons.person_add), label: 'ڈونر بنیں'));
+        tabs.add(const InfoTab());
+        items.add(const BottomNavigationBarItem(
+            icon: Icon(Icons.info), label: 'معلومات'));
+        final index = _tab < tabs.length ? _tab : 0;
+        final showBanner =
+            tabs[index] is HomeTab || tabs[index] is DirectoryTab;
+        return Scaffold(
+      appBar: AppBar(
+        title: const Text('Doner'),
+        backgroundColor: const Color(0xFFC8102E),
+        foregroundColor: Colors.white,
+        centerTitle: true,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.admin_panel_settings),
+            tooltip: 'ایڈمن',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const AdminScreen()),
+              );
+            },
+          ),
+          IconButton(
+            icon: const Icon(Icons.system_update),
+            tooltip: 'اپ ڈیٹ چیک کریں',
+            onPressed: () => UpdateService.checkManually(context),
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          // Announcement banner: in layout flow above the tabs, never
+          // an overlay, so it can never cover an action button. Shown
+          // only when enabled AND text is non-empty (see showAnnouncement).
+          if (config.showAnnouncement)
+            announcementBanner(config.announcementText),
+          const UpdateProgressBanner(),
+          Expanded(child: tabs[index]),
+          if (showBanner) const BannerAdWidget(),
+        ],
+      ),
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: index,
+        type: BottomNavigationBarType.fixed,
+        selectedItemColor: const Color(0xFFC8102E),
+        onTap: (i) => setState(() => _tab = i),
+        items: items,
+      ),
+        );
+      },
+    );
+  }
+}
+
+Widget sectionTitle(String text) {
+  return Padding(
+    padding: const EdgeInsets.only(top: 20, bottom: 8),
+    child: Text(
+      text,
+      style: const TextStyle(
+        fontSize: 20,
+        fontWeight: FontWeight.w900,
+        color: Color(0xFF8F0B21),
+      ),
+    ),
+  );
+}
+
+Widget contactRow({String tel = centralTel, String wa = centralWa}) {
+  return Row(
+    children: [
+      Expanded(
+        child: ElevatedButton.icon(
+          onPressed: () => AdService.runWithAd(() => callNumber(tel)),
+          icon: const Icon(Icons.phone),
+          label: const Text('کال کریں'),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFFC8102E),
+            foregroundColor: Colors.white,
+            padding: const EdgeInsets.symmetric(vertical: 12),
+          ),
+        ),
+      ),
+      const SizedBox(width: 10),
+      Expanded(
+        child: ElevatedButton.icon(
+          onPressed: () => whatsappNumber(wa),
+          icon: const Icon(Icons.chat),
+          label: const Text('WhatsApp کریں'),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFF25D366),
+            foregroundColor: Colors.white,
+            padding: const EdgeInsets.symmetric(vertical: 12),
+          ),
+        ),
+      ),
+    ],
+  );
+}
+
+/// Server announcement banner. A plain in-flow strip (never a Stack
+/// overlay) so it can never cover the Call/WhatsApp buttons below it.
+Widget announcementBanner(String text) {
+  return Container(
+    width: double.infinity,
+    color: const Color(0xFFFFF0F0),
+    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+    child: Text(
+      '📢 $text',
+      textAlign: TextAlign.center,
+      style: const TextStyle(
+          fontWeight: FontWeight.w800, color: Color(0xFF8F0B21)),
+    ),
+  );
+}
+
+/// Live progress banner for the launch APK download (Jaani 27 Oct 2026
+/// standing rule: no silent processes). In layout flow above the tabs,
+/// never an overlay, so it can never cover an action button. Shows REAL
+/// % (bytes/total) when the server reports a size, otherwise live
+/// status text. Cleared automatically when the download ends.
+class UpdateProgressBanner extends StatelessWidget {
+  const UpdateProgressBanner({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<UpdateDownloadProgress?>(
+      valueListenable: UpdateService.launchProgress,
+      builder: (context, progress, _) {
+        if (progress == null) return const SizedBox.shrink();
+        final known = progress.known;
+        return Container(
+          width: double.infinity,
+          color: const Color(0xFFFFF0F0),
+          padding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                known
+                    ? 'اپ ڈیٹ ڈاؤن لوڈ ہو رہا ہے… '
+                        '${progress.percentDone}٪ مکمل — '
+                        '${progress.percentLeft}٪ باقی'
+                    : 'اپ ڈیٹ ڈاؤن لوڈ ہو رہا ہے…',
+                style: const TextStyle(
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF8F0B21)),
+              ),
+              const SizedBox(height: 6),
+              LinearProgressIndicator(
+                  value: known ? progress.fraction : null),
+              if (known) ...[
+                const SizedBox(height: 4),
+                Text(progress.mbLine,
+                    style: const TextStyle(
+                        color: Colors.black54, fontSize: 12)),
+              ],
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Inserts a native ad card after every 6 list entries. The card is
+/// clearly an ad (AdMob native template) — never a fake donor entry.
+List<Widget> withNativeAds(List<Widget> items) {
+  if (items.length < 6) return items;
+  final out = <Widget>[];
+  for (var i = 0; i < items.length; i++) {
+    out.add(items[i]);
+    if ((i + 1) % 6 == 0) out.add(const NativeAdWidget());
+  }
+  return out;
+}
+
+// ============================ HOME TAB ============================
+
+class HomeTab extends StatefulWidget {
+  const HomeTab({super.key});
+
+  @override
+  State<HomeTab> createState() => _HomeTabState();
+}
+
+class _HomeTabState extends State<HomeTab> {
+  String? _patientGroup;
+  List<FeedPost> _feed = [];
+  bool _feedLoading = false;
+  String? _feedError;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadFeed();
+  }
+
+  Future<void> _loadFeed() async {
+    if (_feedLoading) return;
+    setState(() {
+      _feedLoading = true;
+      _feedError = null;
+    });
+    final result = await ApiService.fetchFeed();
+    if (!mounted) return;
+    setState(() {
+      _feedLoading = false;
+      if (result.ok) {
+        _feed = result.data ?? [];
+      } else {
+        _feedError = result.error;
+      }
+    });
+  }
+
+  Future<void> _openPostSheet() async {
+    final posted = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => const FeedPostSheet(),
+    );
+    if (posted == true && mounted) _loadFeed();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final donors = _patientGroup == null
+        ? null
+        : canReceiveFrom[_patientGroup!]!;
+    return ValueListenableBuilder<DonerConfig>(
+      valueListenable: ConfigService.notifier,
+      builder: (context, config, _) {
+        return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Center(
+          child: ClipOval(
+            child: Image.asset('assets/logo.jpg', width: 110, height: 110,
+                fit: BoxFit.cover),
+          ),
+        ),
+        const SizedBox(height: 12),
+        const Text(
+          'آپ کا ایک قطرہ خون — کسی کی پوری زندگی',
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 21, fontWeight: FontWeight.w900),
+        ),
+        const SizedBox(height: 4),
+        const Text(
+          '🩸 خون عطیہ کریں، زندگیاں بچائیں 🩸',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+              color: Color(0xFFC8102E)),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'اپنا صوبہ، ضلع اور علاقہ منتخب کریں اور اپنے قریب ترین بلڈ ڈونر تک پہنچیں — یا فوری ضرورت میں سوسائٹی کے مرکزی نمبر پر رابطہ کریں۔',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: Colors.black54),
+        ),
+        const SizedBox(height: 16),
+        Card(
+          color: const Color(0xFFFFF0F0),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              children: [
+                const Text(
+                  '📞 سوسائٹی کا مرکزی رابطہ نمبر (24 گھنٹے)',
+                  style: TextStyle(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 6),
+                Directionality(
+                  textDirection: TextDirection.ltr,
+                  child: Text(
+                    config.chairman.phone,
+                    style: TextStyle(
+                        fontSize: 32,
+                        fontWeight: FontWeight.w900,
+                        color: Color(0xFF8F0B21)),
+                  ),
+                ),
+                Text(
+                  config.chairman.displayLine,
+                  style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF8F0B21)),
+                ),
+                const SizedBox(height: 10),
+                contactRow(tel: config.chairman.tel, wa: config.chairman.wa),
+                const SizedBox(height: 14),
+                Directionality(
+                  textDirection: TextDirection.ltr,
+                  child: Text(
+                    config.spokesperson.phone,
+                    style: TextStyle(
+                        fontSize: 32,
+                        fontWeight: FontWeight.w900,
+                        color: Color(0xFF8F0B21)),
+                  ),
+                ),
+                Text(
+                  config.spokesperson.displayLine,
+                  style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF8F0B21)),
+                ),
+                const SizedBox(height: 10),
+                contactRow(tel: config.spokesperson.tel, wa: config.spokesperson.wa),
+              ],
+            ),
+          ),
+        ),
+        if (config.compatibility) ...[
+          sectionTitle('🩸 مریض کا بلڈ گروپ — کون عطیہ دے سکتا ہے؟'),
+        const Text(
+          'مریض کا گروپ منتخب کریں، دیکھیں کن گروپس کے ڈونر خون دے سکتے ہیں:',
+          style: TextStyle(color: Colors.black54),
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: bloodGroups.map((g) {
+            final selected = _patientGroup == g;
+            return ChoiceChip(
+              label: Directionality(
+                textDirection: TextDirection.ltr,
+                child: Text(g),
+              ),
+              selected: selected,
+              selectedColor: const Color(0xFFC8102E),
+              labelStyle: TextStyle(
+                  color: selected ? Colors.white : Colors.black87,
+                  fontWeight: FontWeight.w700),
+              onSelected: (_) => setState(() => _patientGroup = g),
+            );
+          }).toList(),
+        ),
+        ],
+        if (config.compatibility && donors != null) ...[
+          const SizedBox(height: 10),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Text(
+                'مریض ($_patientGroup) کو یہ گروپس خون دے سکتے ہیں: ${donors.join('، ')}',
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+            ),
+          ),
+        ],
+        if (config.directory) ...[
+          sectionTitle('ڈائریکٹری'),
+          const Text(
+            'پورے پاکستان کے صوبے اور اضلاع شامل ہیں۔ ڈائریکٹری ٹیب سے اپنا صوبہ، ضلع اور علاقہ منتخب کریں۔ ڈونر رجسٹریشن جاری ہے — اپنے علاقے کے ڈونرز کے لیے مرکزی نمبر پر رابطہ کریں یا خود ڈونر بنیں۔',
+            style: TextStyle(color: Colors.black54),
+          ),
+        ],
+        sectionTitle('تازہ اپ ڈیٹس'),
+        Row(
+          children: [
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: _openPostSheet,
+                icon: const Icon(Icons.photo_camera),
+                label: const Text('اپ ڈیٹ پوسٹ کریں'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFC8102E),
+                  foregroundColor: Colors.white,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            IconButton(
+              icon: const Icon(Icons.refresh),
+              tooltip: 'اپ ڈیٹس دوبارہ لوڈ کریں',
+              onPressed: _loadFeed,
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        _feedBody(),
+      ],
+        );
+      },
+    );
+  }
+  Widget _feedBody() {
+    if (_feedLoading) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(16),
+          child: Column(
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 10),
+              Text('تازہ اپ ڈیٹس لوڈ ہو رہی ہیں…',
+                  style: TextStyle(color: Colors.black54)),
+            ],
+          ),
+        ),
+      );
+    }
+    if (_feedError != null) {
+      return Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(_feedError!),
+              const SizedBox(height: 8),
+              TextButton(
+                onPressed: _loadFeed,
+                child: const Text('دوبارہ کوشش کریں'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    if (_feed.isEmpty) {
+      return const Card(
+        child: Padding(
+          padding: EdgeInsets.all(16),
+          child: Text(
+            'ابھی کوئی اپ ڈیٹ نہیں ہے۔ نئی اپ ڈیٹس یہاں سب سے پہلے نظر آئیں گی۔',
+            style: TextStyle(color: Colors.black54),
+          ),
+        ),
+      );
+    }
+    return Column(
+      children: _feed.map((post) {
+        Widget? photoWidget;
+        if (post.photo.isNotEmpty) {
+          try {
+            final raw = post.photo.contains(',')
+                ? post.photo.split(',').last
+                : post.photo;
+            final bytes = base64Decode(raw);
+            photoWidget = ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: Image.memory(bytes,
+                  width: double.infinity, fit: BoxFit.cover),
+            );
+          } catch (_) {
+            photoWidget = null;
+          }
+        }
+        final date = displayDate(post.ts);
+        return Card(
+          margin: const EdgeInsets.only(bottom: 10),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (photoWidget != null) ...[
+                  photoWidget,
+                  const SizedBox(height: 8),
+                ],
+                if (post.caption.isNotEmpty)
+                  Text(post.caption,
+                      style: const TextStyle(fontWeight: FontWeight.w800)),
+                const SizedBox(height: 4),
+                Text('👤 ${post.name}'
+                    '${post.area.isNotEmpty ? ' — ${post.area}' : ''}'),
+                if (post.group.isNotEmpty)
+                  Directionality(
+                    textDirection: TextDirection.ltr,
+                    child: Text('🩸 ${post.group}'),
+                  ),
+                if (post.patient.isNotEmpty)
+                  Text('مریض: ${post.patient}'),
+                if (post.place.isNotEmpty) Text('جگہ: ${post.place}'),
+                if (date.isNotEmpty)
+                  Text(date, style: const TextStyle(color: Colors.black54)),
+              ],
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+}
+
+
+// ============================ SOCIAL HOME FEED ============================
+//
+// Doner's social home feed (NEW in Doner 1.0.0): society members post
+// daily-work updates with a camera photo + text. Displayed newest
+// first, each card shows photo + text + author name + time ONLY —
+// NEVER a phone number (phones stay admin-only, as in the directory).
+// Posting, liking and commenting are gated by the SAME member-code
+// mechanism as the existing home feed: the code is entered per
+// session, held only in widget state, and never stored. The feed
+// starts EMPTY: no post, like or comment is ever seeded or faked.
+// If the backend is unavailable, the tab shows an honest error card
+// with a retry button — never a crash, never fake data.
+
+Widget? socialPhotoWidget(String photo) {
+  if (photo.isEmpty) return null;
+  try {
+    final raw = photo.contains(',') ? photo.split(',').last : photo;
+    final bytes = base64Decode(raw);
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(10),
+      child: Image.memory(bytes, width: double.infinity, fit: BoxFit.cover),
+    );
+  } catch (_) {
+    return null;
+  }
+}
+
+class SocialFeedTab extends StatefulWidget {
+  const SocialFeedTab({super.key});
+
+  @override
+  State<SocialFeedTab> createState() => _SocialFeedTabState();
+}
+
+class _SocialFeedTabState extends State<SocialFeedTab> {
+  String _memberId = '';
+  String? _memberCode; // Session-only: never written to storage.
+  List<SocialPost> _posts = [];
+  bool _loading = false;
+  String? _error;
+  String? _likingId;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    if (_loading) return;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    final memberId = await ApiService.memberId();
+    final result = await ApiService.fetchSocialPosts(memberId);
+    if (!mounted) return;
+    setState(() {
+      _loading = false;
+      _memberId = memberId;
+      if (result.ok) {
+        _posts = result.data ?? [];
+      } else {
+        _error = result.error;
+      }
+    });
+  }
+
+  /// Asks for the member code once per session (dialog, obscured).
+  /// Returns null when the user backs out. Never stored anywhere.
+  Future<String?> _ensureMemberCode() async {
+    if (_memberCode != null && _memberCode!.isNotEmpty) return _memberCode;
+    final controller = TextEditingController();
+    final code = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('ممبر کوڈ'),
+        content: TextField(
+          controller: controller,
+          obscureText: true,
+          decoration: const InputDecoration(
+            labelText: 'ممبر کوڈ درج کریں',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('منسوخ'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, controller.text.trim()),
+            child: const Text('جاری رکھیں'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (code == null || code.isEmpty) return null;
+    _memberCode = code;
+    return code;
+  }
+
+  Future<void> _toggleLike(SocialPost post) async {
+    if (_likingId != null) return;
+    final code = await _ensureMemberCode();
+    if (code == null || !mounted) return;
+    setState(() => _likingId = post.id);
+    final result = await ApiService.toggleSocialLike(
+      postId: post.id,
+      memberCode: code,
+      memberId: _memberId,
+    );
+    if (!mounted) return;
+    setState(() {
+      _likingId = null;
+      if (result.ok && result.data != null) {
+        final (liked, count) = result.data!;
+        _posts = _posts
+            .map((p) => p.id == post.id
+                ? p.copyWith(liked: liked, likeCount: count)
+                : p)
+            .toList();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(result.error ?? 'دوبارہ کوشش کریں')),
+        );
+      }
+    });
+  }
+
+  Future<void> _openPostSheet() async {
+    final posted = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => const SocialPostSheet(),
+    );
+    if (posted == true && mounted) _load();
+  }
+
+  Future<void> _openComments(SocialPost post) async {
+    final changed = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => SocialCommentsSheet(
+        post: post,
+        memberId: _memberId,
+        ensureMemberCode: _ensureMemberCode,
+      ),
+    );
+    if (changed == true && mounted) _load();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        sectionTitle('سوشل فیڈ'),
+        const Text(
+          'سوسائٹی کا روزانہ کا کام — ممبرز کی تصویری اپ ڈیٹس، نئی سے پرانی ترتیب میں۔ پوسٹ، لائک اور کمنٹ صرف ممبر کوڈ سے۔',
+          style: TextStyle(color: Colors.black54),
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: _openPostSheet,
+                icon: const Icon(Icons.photo_camera),
+                label: const Text('پوسٹ کریں'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFC8102E),
+                  foregroundColor: Colors.white,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            IconButton(
+              icon: const Icon(Icons.refresh),
+              tooltip: 'فیڈ دوبارہ لوڈ کریں',
+              onPressed: _load,
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        if (_loading)
+          const Center(
+            child: Padding(
+              padding: EdgeInsets.all(16),
+              child: Column(
+                children: [
+                  CircularProgressIndicator(),
+                  SizedBox(height: 10),
+                  Text('سوشل فیڈ لوڈ ہو رہی ہے…',
+                      style: TextStyle(color: Colors.black54)),
+                ],
+              ),
+            ),
+          )
+        else if (_error != null)
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(_error!),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'سوشل فیڈ دستیاب نہیں — بیک اینڈ ابھی سیٹ نہیں ہوا '
+                    'یا انٹرنیٹ دستیاب نہیں۔',
+                    style: TextStyle(color: Colors.black54),
+                  ),
+                  const SizedBox(height: 8),
+                  TextButton(
+                    onPressed: _load,
+                    child: const Text('دوبارہ کوشش کریں'),
+                  ),
+                ],
+              ),
+            ),
+          )
+        else if (_posts.isEmpty)
+          const Card(
+            child: Padding(
+              padding: EdgeInsets.all(16),
+              child: Text(
+                'ابھی کوئی پوسٹ نہیں ہے۔ سوشل فیڈ خالی شروع ہوتی ہے — '
+                'پہلی پوسٹ آپ کریں!',
+                style: TextStyle(color: Colors.black54),
+              ),
+            ),
+          )
+        else
+          ..._posts.map((post) {
+            final photo = socialPhotoWidget(post.photo);
+            final busy = _likingId == post.id;
+            return Card(
+              margin: const EdgeInsets.only(bottom: 10),
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (photo != null) ...[
+                      photo,
+                      const SizedBox(height: 8),
+                    ],
+                    if (post.text.isNotEmpty)
+                      Text(post.text,
+                          style: const TextStyle(
+                              fontWeight: FontWeight.w800, fontSize: 16)),
+                    const SizedBox(height: 6),
+                    Text('👤 ${post.author}'),
+                    if (post.ts.isNotEmpty)
+                      Text(displayDateTime(post.ts),
+                          style: const TextStyle(color: Colors.black54)),
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        TextButton.icon(
+                          onPressed: busy ? null : () => _toggleLike(post),
+                          icon: Icon(
+                            post.liked
+                                ? Icons.favorite
+                                : Icons.favorite_border,
+                            color: post.liked
+                                ? const Color(0xFFC8102E)
+                                : null,
+                          ),
+                          label: Text(
+                              '${post.likeCount} لائک${post.liked ? ' ✓' : ''}'),
+                        ),
+                        TextButton.icon(
+                          onPressed: () => _openComments(post),
+                          icon: const Icon(Icons.comment_outlined),
+                          label: Text('${post.commentCount} کمنٹ'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }),
+      ],
+    );
+  }
+}
+
+/// Post-creation sheet: camera photo + text + author name, gated by
+/// the session-only member code (same mechanism as FeedPostSheet).
+/// Returns true when the post succeeded (parent refreshes the feed).
+class SocialPostSheet extends StatefulWidget {
+  const SocialPostSheet({super.key});
+
+  @override
+  State<SocialPostSheet> createState() => _SocialPostSheetState();
+}
+
+class _SocialPostSheetState extends State<SocialPostSheet> {
+  final _formKey = GlobalKey<FormState>();
+  final _author = TextEditingController();
+  final _text = TextEditingController();
+  final _memberCode = TextEditingController();
+  String? _photoBase64;
+  bool _busy = false;
+  bool _picking = false;
+  int? _uploadPct;
+  String? _error;
+
+  @override
+  void dispose() {
+    _author.dispose();
+    _text.dispose();
+    _memberCode.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pick(ImageSource source) async {
+    setState(() {
+      _picking = true;
+      _error = null;
+    });
+    final result = await ApiService.pickPhoto(source);
+    if (!mounted) return;
+    setState(() {
+      _picking = false;
+      if (result.cancelled) {
+        // User backed out of the picker: no error, no change.
+      } else if (result.error != null) {
+        _error = result.error;
+      } else {
+        _photoBase64 = result.base64;
+        _error = null;
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Directionality(
+      textDirection: TextDirection.rtl,
+      child: Padding(
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom,
+          left: 16,
+          right: 16,
+          top: 16,
+        ),
+        child: SingleChildScrollView(
+          child: Form(
+            key: _formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('📸 سوشل پوسٹ کریں',
+                    style:
+                        TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: () => _pick(ImageSource.camera),
+                        icon: const Icon(Icons.photo_camera),
+                        label: const Text('کیمرہ'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: () => _pick(ImageSource.gallery),
+                        icon: const Icon(Icons.photo_library),
+                        label: const Text('گیلری'),
+                      ),
+                    ),
+                  ],
+                ),
+                if (_picking)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 8),
+                    child: Text('تصویر تیار ہو رہی ہے…',
+                        style: TextStyle(color: Colors.black54)),
+                  ),
+                if (_photoBase64 != null)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 8),
+                    child: Text('✔ تصویر منتخب ہو گئی ہے۔',
+                        style: TextStyle(
+                            color: Colors.green,
+                            fontWeight: FontWeight.w700)),
+                  ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: _author,
+                  decoration: const InputDecoration(
+                      labelText: 'نام *', border: OutlineInputBorder()),
+                  validator: (v) =>
+                      (v == null || v.trim().isEmpty) ? 'نام ضروری ہے' : null,
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: _text,
+                  maxLines: 4,
+                  decoration: const InputDecoration(
+                      labelText: 'پوسٹ کی تحریر *',
+                      border: OutlineInputBorder()),
+                  validator: (v) => (v == null || v.trim().isEmpty)
+                      ? 'تحریر ضروری ہے'
+                      : null,
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: _memberCode,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                      labelText: 'ممبر کوڈ *',
+                      border: OutlineInputBorder()),
+                  validator: (v) => (v == null || v.trim().isEmpty)
+                      ? 'ممبر کوڈ ضروری ہے'
+                      : null,
+                ),
+                if (_error != null)
+                  Padding(
+                    padding: EdgeInsets.only(top: 8),
+                    child: Text(_error!,
+                        style: const TextStyle(
+                            color: Colors.red, fontWeight: FontWeight.w700)),
+                  ),
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: _busy
+                        ? null
+                        : () async {
+                            if (!_formKey.currentState!.validate()) return;
+                            setState(() {
+                              _busy = true;
+                              _error = null;
+                              _uploadPct = null;
+                            });
+                            final result =
+                                await ApiService.createSocialPost(
+                              author: _author.text.trim(),
+                              text: _text.text.trim(),
+                              photoBase64: _photoBase64,
+                              // Session-only: read from the field and
+                              // never written to any storage.
+                              memberCode: _memberCode.text.trim(),
+                              onUploadProgress: (sent, total) {
+                                if (!mounted) return;
+                                setState(() => _uploadPct = total > 0
+                                    ? (sent / total * 100).round()
+                                    : null);
+                              },
+                            );
+                            if (!mounted) return;
+                            setState(() => _busy = false);
+                            if (result.ok) {
+                              Navigator.pop(context, true);
+                            } else {
+                              setState(() => _error = result.error);
+                            }
+                          },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFC8102E),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
+                    child: Text(_busy
+                        ? (_photoBase64 != null && _uploadPct != null
+                            ? 'اپ لوڈ ہو رہا ہے… $_uploadPct٪ مکمل — ${100 - _uploadPct!}٪ باقی'
+                            : 'پوسٹ ہو رہا ہے…')
+                        : 'پوسٹ کریں'),
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Comments sheet for one social post: lists comments (author + time),
+/// sends a text comment gated by the session member code. Returns true
+/// when a comment was added (parent refreshes counts).
+class SocialCommentsSheet extends StatefulWidget {
+  const SocialCommentsSheet({
+    super.key,
+    required this.post,
+    required this.memberId,
+    required this.ensureMemberCode,
+  });
+
+  final SocialPost post;
+  final String memberId;
+  final Future<String?> Function() ensureMemberCode;
+
+  @override
+  State<SocialCommentsSheet> createState() => _SocialCommentsSheetState();
+}
+
+class _SocialCommentsSheetState extends State<SocialCommentsSheet> {
+  final _author = TextEditingController();
+  final _text = TextEditingController();
+  List<SocialComment> _comments = [];
+  bool _loading = false;
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _author.dispose();
+    _text.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    final result =
+        await ApiService.fetchSocialComments(widget.post.id);
+    if (!mounted) return;
+    setState(() {
+      _loading = false;
+      if (result.ok) {
+        _comments = result.data ?? [];
+      } else {
+        _error = result.error;
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Directionality(
+      textDirection: TextDirection.rtl,
+      child: Padding(
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom,
+          left: 16,
+          right: 16,
+          top: 16,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('💬 کمنٹس — ${widget.post.author}',
+                style: const TextStyle(
+                    fontSize: 18, fontWeight: FontWeight.w900)),
+            const SizedBox(height: 12),
+            if (_loading)
+              const Padding(
+                padding: EdgeInsets.all(16),
+                child: Center(child: CircularProgressIndicator()),
+              )
+            else if (_error != null)
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(_error!),
+                      TextButton(
+                        onPressed: _load,
+                        child: const Text('دوبارہ کوشش کریں'),
+                      ),
+                    ],
+                  ),
+                ),
+              )
+            else if (_comments.isEmpty)
+              const Card(
+                child: Padding(
+                  padding: EdgeInsets.all(12),
+                  child: Text('ابھی کوئی کمنٹ نہیں ہے۔',
+                      style: TextStyle(color: Colors.black54)),
+                ),
+              )
+            else
+              Flexible(
+                child: ListView(
+                  shrinkWrap: true,
+                  children: _comments.map((c) {
+                    return Card(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      child: Padding(
+                        padding: const EdgeInsets.all(10),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(c.text,
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.w700)),
+                            const SizedBox(height: 2),
+                            Text('👤 ${c.author}'
+                                '${c.ts.isNotEmpty ? ' — ${displayDateTime(c.ts)}' : ''}',
+                                style: const TextStyle(
+                                    color: Colors.black54, fontSize: 12)),
+                          ],
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _author,
+              decoration: const InputDecoration(
+                  labelText: 'نام *', border: OutlineInputBorder()),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _text,
+              maxLines: 3,
+              decoration: const InputDecoration(
+                  labelText: 'کمنٹ لکھیں *', border: OutlineInputBorder()),
+            ),
+            if (_error != null && !_loading)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(_error!,
+                    style: const TextStyle(
+                        color: Colors.red, fontWeight: FontWeight.w700)),
+              ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: _busy
+                    ? null
+                    : () async {
+                        final author = _author.text.trim();
+                        final text = _text.text.trim();
+                        if (author.isEmpty || text.isEmpty) {
+                          setState(() => _error = 'نام اور کمنٹ دونوں ضروری ہیں');
+                          return;
+                        }
+                        final code = await widget.ensureMemberCode();
+                        if (code == null || !mounted) return;
+                        setState(() {
+                          _busy = true;
+                          _error = null;
+                        });
+                        final result =
+                            await ApiService.addSocialComment(
+                          postId: widget.post.id,
+                          author: author,
+                          text: text,
+                          memberCode: code,
+                          memberId: widget.memberId,
+                        );
+                        if (!mounted) return;
+                        setState(() => _busy = false);
+                        if (result.ok) {
+                          _text.clear();
+                          Navigator.pop(context, true);
+                        } else {
+                          setState(() => _error = result.error);
+                        }
+                      },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFC8102E),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                ),
+                child: Text(_busy ? 'بھیجا جا رہا ہے…' : 'کمنٹ کریں'),
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ============================ DIRECTORY TAB ============================
+
+class DirectoryTab extends StatefulWidget {
+  const DirectoryTab({super.key});
+
+  @override
+  State<DirectoryTab> createState() => _DirectoryTabState();
+}
+
+class _DirectoryTabState extends State<DirectoryTab> {
+  String _level = 'provinces'; // provinces | districts | areas | donors
+  String? _province;
+  String? _district;
+  String? _area;
+  String _query = '';
+
+  // Live public donors, cached per area selection (in-memory only).
+  // The cache holds FILTERED rows (name + group + address only);
+  // phones never enter this state — the public endpoint has none.
+  final Map<String, List<PublicDonor>> _liveCache = {};
+  final Map<String, String> _liveErrors = {};
+  final Set<String> _liveLoading = {};
+  final Set<String> _liveRequested = {};
+
+  String get _areaKey => '$_province|$_district|$_area';
+
+  Future<void> _loadLive(String key, String province, String district,
+      String area) async {
+    if (_liveLoading.contains(key)) return;
+    setState(() {
+      _liveLoading.add(key);
+      _liveErrors.remove(key);
+    });
+    final result = await ApiService.fetchPublicDonors();
+    if (!mounted) return;
+    setState(() {
+      _liveLoading.remove(key);
+      if (result.ok) {
+        _liveCache[key] = (result.data ?? [])
+            .where((d) =>
+                d.province == province &&
+                d.district == district &&
+                d.area == area)
+            .toList();
+      } else {
+        _liveErrors[key] = result.error ?? 'سرور سے جواب نہیں ملا۔';
+      }
+    });
+  }
+
+  void _reset() {
+    setState(() {
+      _level = 'provinces';
+      _province = null;
+      _district = null;
+      _area = null;
+    });
+  }
+
+  String _provinceOf(String district) {
+    for (final e in districts.entries) {
+      if (e.value.contains(district)) return e.key;
+    }
+    return '';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+          child: TextField(
+            decoration: const InputDecoration(
+              hintText: '🔍 تلاش کریں: شہر، علاقہ یا ضلع',
+              border: OutlineInputBorder(
+                  borderRadius: BorderRadius.all(Radius.circular(999))),
+              prefixIcon: Icon(Icons.search),
+            ),
+            onChanged: (v) => setState(() => _query = v.trim()),
+          ),
+        ),
+        if (_query.isNotEmpty) _searchResults() else Expanded(child: _levelView()),
+      ],
+    );
+  }
+
+  Widget _searchResults() {
+    final List<Widget> hits = [];
+    for (final p in districts.keys) {
+      for (final d in districts[p]!) {
+        if (d.contains(_query)) {
+          hits.add(ListTile(
+            leading: const Icon(Icons.location_on),
+            title: Text('📍 ضلع: $d — $p'),
+            onTap: () => AdService.runWithAd(() {
+              if (!mounted) return;
+              setState(() {
+                _province = p;
+                _district = d;
+                _area = null;
+                _level = 'areas';
+                _query = '';
+              });
+            }),
+          ));
+        }
+        for (final a in areas[d] ?? const <String>[]) {
+          if (a.contains(_query)) {
+            hits.add(ListTile(
+              leading: const Icon(Icons.location_city),
+              title: Text('🏘️ علاقہ: $a — $d، $p'),
+              onTap: () => AdService.runWithAd(() {
+                if (!mounted) return;
+                setState(() {
+                  _province = p;
+                  _district = d;
+                  _area = a;
+                  _level = 'donors';
+                  _query = '';
+                });
+              }),
+            ));
+          }
+        }
+      }
+    }
+    if (hits.isEmpty) {
+      return const Expanded(
+        child: Center(child: Text('کوئی نتیجہ نہیں ملا۔ ہجے درست کر کے دوبارہ کوشش کریں۔')),
+      );
+    }
+    return Expanded(
+        child: ListView(children: withNativeAds(hits.take(25).toList())));
+  }
+
+  Widget _crumbs() {
+    final List<Widget> parts = [
+      ChoiceChip(
+        label: const Text('🇵🇰 پاکستان (صوبے)'),
+        selected: _level == 'provinces',
+        onSelected: (_) => _reset(),
+      ),
+    ];
+    if (_province != null) {
+      parts.add(ChoiceChip(
+        label: Text(_province!),
+        selected: _level == 'districts',
+        onSelected: (_) => setState(() {
+          _level = 'districts';
+          _district = null;
+          _area = null;
+        }),
+      ));
+    }
+    if (_district != null) {
+      parts.add(ChoiceChip(
+        label: Text(_district!),
+        selected: _level == 'areas',
+        onSelected: (_) => setState(() {
+          _level = 'areas';
+          _area = null;
+        }),
+      ));
+    }
+    if (_area != null) {
+      parts.add(Chip(label: Text(_area!)));
+    }
+    return Wrap(spacing: 8, children: parts);
+  }
+
+  Widget _levelView() {
+    Widget body;
+    if (_level == 'provinces') {
+      body = ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          const Text(
+            'صوبہ منتخب کریں:',
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
+          ),
+          const SizedBox(height: 8),
+          ...withNativeAds(districts.entries.map((e) => Card(
+                child: ListTile(
+                  title: Text(e.key,
+                      style: const TextStyle(fontWeight: FontWeight.w800)),
+                  subtitle: Text('${e.value.length} اضلاع'),
+                  trailing: const Icon(Icons.arrow_back_ios, size: 16),
+                  onTap: () => AdService.runWithAd(() {
+                    if (!mounted) return;
+                    setState(() {
+                      _province = e.key;
+                      _level = 'districts';
+                    });
+                  }),
+                ),
+              )).toList()),
+        ],
+      );
+    } else if (_level == 'districts') {
+      final list = districts[_province!]!;
+      body = ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          _crumbs(),
+          const SizedBox(height: 12),
+          Text('$_province — ضلع / شہر منتخب کریں:',
+              style:
+                  const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+          const SizedBox(height: 8),
+          ...withNativeAds(list.map((d) => Card(
+                child: ListTile(
+                  title: Text(d,
+                      style: const TextStyle(fontWeight: FontWeight.w700)),
+                  subtitle: Text((areas[d] ?? const <String>[]).isEmpty
+                      ? 'ڈونرز دیکھیں'
+                      : '${areas[d]!.length} علاقے'),
+                  trailing: const Icon(Icons.arrow_back_ios, size: 16),
+                  onTap: () => AdService.runWithAd(() {
+                    if (!mounted) return;
+                    setState(() {
+                      _district = d;
+                      _area = null;
+                      _level = 'areas';
+                    });
+                  }),
+                ),
+              )).toList()),
+        ],
+      );
+    } else if (_level == 'areas') {
+      final known = areas[_district!] ?? const <String>[];
+      body = ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          _crumbs(),
+          const SizedBox(height: 12),
+          Text('$_district — علاقہ منتخب کریں:',
+              style:
+                  const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+          const SizedBox(height: 8),
+          if (known.isEmpty)
+            const Card(
+              child: Padding(
+                padding: EdgeInsets.all(16),
+                child: Text(
+                    'اس ضلع کے علاقے ابھی شامل نہیں ہوئے۔ نیا ڈونر شامل ہوتے ہی علاقہ خود بخود بن جائے گا۔'),
+              ),
+            )
+          else
+            ...withNativeAds(known.map((a) => Card(
+                  child: ListTile(
+                    title: Text(a,
+                        style: const TextStyle(fontWeight: FontWeight.w700)),
+                    trailing: const Icon(Icons.arrow_back_ios, size: 16),
+                    onTap: () => AdService.runWithAd(() {
+                      if (!mounted) return;
+                      setState(() {
+                        _area = a;
+                        _level = 'donors';
+                      });
+                    }),
+                  ),
+                )).toList()),
+          const SizedBox(height: 16),
+          _donorEmptyState(),
+        ],
+      );
+    } else {
+      body = ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          _crumbs(),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: Text('$_area ($_district) کے ڈونرز',
+                    style: const TextStyle(
+                        fontSize: 18, fontWeight: FontWeight.w900)),
+              ),
+              IconButton(
+                icon: const Icon(Icons.refresh),
+                tooltip: 'ڈونرز دوبارہ لوڈ کریں',
+                onPressed: () {
+                  final key = _areaKey;
+                  setState(() {
+                    _liveCache.remove(key);
+                    _liveErrors.remove(key);
+                    _liveRequested.remove(key);
+                  });
+                },
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          _liveDonorsSection(),
+        ],
+      );
+    }
+    return body;
+  }
+
+  /// Live donors for the selected area. The existing empty-state text
+  /// shows ONLY when the live list is empty for that area; a fetch
+  /// failure shows an honest Urdu message + retry, never fake data.
+  /// Donor rows show name + blood group + address ONLY — no phone,
+  /// no call button (the public endpoint returns no phones at all).
+  Widget _liveDonorsSection() {
+    if (_area == null || _district == null || _province == null) {
+      return _donorEmptyState();
+    }
+    final key = _areaKey;
+    final province = _province!;
+    final district = _district!;
+    final area = _area!;
+    if (_liveCache.containsKey(key)) {
+      final donors = _liveCache[key]!;
+      if (donors.isEmpty) return _donorEmptyState();
+      return Column(
+        children: [
+          ...withNativeAds(donors.map((d) => Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      CircleAvatar(
+                        backgroundColor: const Color(0xFFC8102E),
+                        foregroundColor: Colors.white,
+                        child: Directionality(
+                          textDirection: TextDirection.ltr,
+                          child: Text(d.group,
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.w900, fontSize: 13)),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(d.name,
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.w800,
+                                    fontSize: 17)),
+                            if (d.address.isNotEmpty)
+                              Text('📍 ${d.address}',
+                                  style: const TextStyle(
+                                      color: Colors.black54)),
+                            Text('$area، $district',
+                                style: const TextStyle(
+                                    color: Colors.black54)),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              )).toList()),
+          const SizedBox(height: 12),
+          const Text(
+            'ڈونر سے رابطے کے لیے سوسائٹی کے مرکزی نمبر پر کال کریں۔',
+            style: TextStyle(color: Colors.black54),
+          ),
+          const SizedBox(height: 8),
+          ValueListenableBuilder<DonerConfig>(
+            valueListenable: ConfigService.notifier,
+            builder: (context, config, _) => contactRow(
+              tel: config.chairman.tel,
+              wa: config.chairman.wa,
+            ),
+          ),
+        ],
+      );
+    }
+    if (_liveErrors.containsKey(key)) {
+      return Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(_liveErrors[key]!),
+              const SizedBox(height: 8),
+              TextButton(
+                onPressed: () {
+                  setState(() {
+                    _liveErrors.remove(key);
+                    _liveRequested.remove(key);
+                  });
+                },
+                child: const Text('دوبارہ کوشش کریں'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    if (_liveLoading.contains(key)) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(24),
+          child: Column(
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 10),
+              Text('ڈونرز لوڈ ہو رہے ہیں…',
+                  style: TextStyle(color: Colors.black54)),
+            ],
+          ),
+        ),
+      );
+    }
+    // First visit to this area: schedule one fetch after this frame.
+    // Guarded by _liveRequested so rebuilds never duplicate the call.
+    if (!_liveRequested.contains(key)) {
+      _liveRequested.add(key);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _loadLive(key, province, district, area);
+      });
+    }
+    return const Center(
+      child: Padding(
+        padding: EdgeInsets.all(24),
+        child: Column(
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(height: 10),
+            Text('ڈونرز لوڈ ہو رہے ہیں…',
+                style: TextStyle(color: Colors.black54)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _donorEmptyState() {
+    return Card(
+      color: const Color(0xFFFFF8F8),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'اس علاقے میں ابھی کوئی ڈونر رجسٹر نہیں۔',
+              style: TextStyle(fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'ڈونر رجسٹریشن جاری ہے۔ فوری ضرورت ہو تو سوسائٹی کے مرکزی نمبر پر رابطہ کریں، یا پہلے ڈونر بنیں!',
+              style: TextStyle(color: Colors.black54),
+            ),
+            const SizedBox(height: 12),
+            ValueListenableBuilder<DonerConfig>(
+              valueListenable: ConfigService.notifier,
+              builder: (context, config, _) => contactRow(
+                tel: config.chairman.tel,
+                wa: config.chairman.wa,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ============================ REGISTER TAB ============================
+
+class DonorEntry {
+  final String name;
+  final String phone;
+  final String province;
+  final String district;
+  final String area;
+  final String group;
+  final String address;
+
+  DonorEntry({
+    required this.name,
+    required this.phone,
+    required this.province,
+    required this.district,
+    required this.area,
+    required this.group,
+    required this.address,
+  });
+
+  Map<String, String> toJson() => {
+        'name': name,
+        'phone': phone,
+        'province': province,
+        'district': district,
+        'area': area,
+        'group': group,
+        'address': address,
+      };
+
+  factory DonorEntry.fromJson(Map<String, dynamic> j) => DonorEntry(
+        name: j['name'] as String? ?? '',
+        phone: j['phone'] as String? ?? '',
+        province: j['province'] as String? ?? '',
+        district: j['district'] as String? ?? '',
+        area: j['area'] as String? ?? '',
+        group: j['group'] as String? ?? '',
+        address: j['address'] as String? ?? '',
+      );
+
+  String whatsappMessage() {
+    return 'السلام علیکم! میں امن بلڈ ڈونر سوسائٹی میں ڈونر کے طور پر رجسٹر ہونا چاہتا ہوں۔\n'
+        'نام: $name\nفون: $phone\nصوبہ: $province\nضلع: $district\nعلاقہ: $area\nبلڈ گروپ: $group\nپتہ: $address';
+  }
+}
+
+class RegisterTab extends StatefulWidget {
+  const RegisterTab({super.key});
+
+  @override
+  State<RegisterTab> createState() => _RegisterTabState();
+}
+
+class _RegisterTabState extends State<RegisterTab> {
+  final _formKey = GlobalKey<FormState>();
+  final _name = TextEditingController();
+  final _phone = TextEditingController();
+  final _area = TextEditingController();
+  final _address = TextEditingController();
+  String _province = districts.keys.first;
+  String _district = districts.values.first.first;
+  String _group = bloodGroups.first;
+  List<DonorEntry> _mine = [];
+  bool _saved = false;
+  bool _serverBusy = false;
+  bool? _serverOk;
+  String? _serverMessage;
+
+  /// Posts the local entry to the server directory. Local-card success
+  /// is never affected by the server result (and vice versa) — the
+  /// message always says which side succeeded.
+  Future<void> _submitToServer(DonorEntry entry) async {
+    setState(() {
+      _serverBusy = true;
+      _serverOk = null;
+      _serverMessage = null;
+    });
+    final result = await ApiService.submitDonor(
+      name: entry.name,
+      phone: entry.phone,
+      province: entry.province,
+      district: entry.district,
+      area: entry.area,
+      address: entry.address,
+      group: entry.group,
+    );
+    if (!mounted) return;
+    setState(() {
+      _serverBusy = false;
+      if (result.ok) {
+        _serverOk = true;
+        _serverMessage = '✔ سرور ڈائریکٹری میں بھی اندراج ہو گیا ہے۔';
+      } else {
+        _serverOk = false;
+        _serverMessage =
+            '⚠ سرور پر اندراج نہیں ہو سکا (${result.error}) — آپ کا کارڈ اس فون میں محفوظ ہے۔';
+      }
+    });
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getStringList('abd_my_registrations') ?? [];
+    setState(() {
+      _mine = raw
+          .map((s) => DonorEntry.fromJson(jsonDecode(s) as Map<String, dynamic>))
+          .toList();
+    });
+  }
+
+  Future<void> _saveList() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(
+        'abd_my_registrations', _mine.map((e) => jsonEncode(e.toJson())).toList());
+  }
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _phone.dispose();
+    _area.dispose();
+    _address.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final districtList = districts[_province]!;
+    if (!districtList.contains(_district)) {
+      _district = districtList.first;
+    }
+    return ValueListenableBuilder<DonerConfig>(
+      valueListenable: ConfigService.notifier,
+      builder: (context, config, _) {
+        return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        const Text(
+          '➕ نیا ڈونر شامل کریں',
+          style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900),
+        ),
+        const SizedBox(height: 4),
+        const Text(
+          'اپنی تفصیل درج کریں۔ اندراج آپ کے فون میں محفوظ ہوگا؛ سوسائٹی کی مرکزی ڈائریکٹری میں شامل ہونے کے لیے WhatsApp پر تفصیل بھیجیں۔',
+          style: TextStyle(color: Colors.black54),
+        ),
+        const SizedBox(height: 12),
+        Form(
+          key: _formKey,
+          child: Column(
+            children: [
+              TextFormField(
+                controller: _name,
+                decoration: const InputDecoration(
+                    labelText: 'ڈونر کا نام *', border: OutlineInputBorder()),
+                validator: (v) =>
+                    (v == null || v.trim().isEmpty) ? 'نام ضروری ہے' : null,
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _phone,
+                keyboardType: TextInputType.phone,
+                decoration: const InputDecoration(
+                    labelText: 'فون نمبر * (مثلاً 03xx-xxxxxxx)',
+                    border: OutlineInputBorder()),
+                validator: (v) {
+                  final digits = (v ?? '').replaceAll(RegExp(r'[^0-9]'), '');
+                  if (digits.length < 10) return 'درست فون نمبر لکھیں';
+                  return null;
+                },
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                value: _province,
+                decoration: const InputDecoration(
+                    labelText: 'صوبہ *', border: OutlineInputBorder()),
+                items: districts.keys
+                    .map((p) =>
+                        DropdownMenuItem(value: p, child: Text(p)))
+                    .toList(),
+                onChanged: (v) => setState(() {
+                  _province = v!;
+                  _district = districts[_province]!.first;
+                }),
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                value: _district,
+                decoration: const InputDecoration(
+                    labelText: 'ضلع / شہر *', border: OutlineInputBorder()),
+                items: districtList
+                    .map((d) =>
+                        DropdownMenuItem(value: d, child: Text(d)))
+                    .toList(),
+                onChanged: (v) => setState(() => _district = v!),
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _area,
+                decoration: const InputDecoration(
+                    labelText: 'علاقہ * (علاقے / محلے / تحصیل کا نام)',
+                    border: OutlineInputBorder()),
+                validator: (v) =>
+                    (v == null || v.trim().isEmpty) ? 'علاقہ ضروری ہے' : null,
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                value: _group,
+                decoration: const InputDecoration(
+                    labelText: 'بلڈ گروپ *', border: OutlineInputBorder()),
+                items: bloodGroups
+                    .map((g) => DropdownMenuItem(
+                          value: g,
+                          child: Directionality(
+                            textDirection: TextDirection.ltr,
+                            child: Text(g),
+                          ),
+                        ))
+                    .toList(),
+                onChanged: (v) => setState(() => _group = v!),
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _address,
+                decoration: const InputDecoration(
+                    labelText: 'مکمل پتہ * (گلی / محلہ، شہر، ضلع)',
+                    border: OutlineInputBorder()),
+                validator: (v) =>
+                    (v == null || v.trim().isEmpty) ? 'پتہ ضروری ہے' : null,
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'آپ کا نام، بلڈ گروپ اور پتہ ڈائریکٹری میں سب کو نظر آئے گا؛ فون نمبر صرف ایڈمن کو نظر آئے گا۔',
+                style: TextStyle(fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: _serverBusy
+                      ? null
+                      : () async {
+                    if (!_formKey.currentState!.validate()) return;
+                    final entry = DonorEntry(
+                      name: _name.text.trim(),
+                      phone: _phone.text.trim(),
+                      province: _province,
+                      district: _district,
+                      area: _area.text.trim(),
+                      group: _group,
+                      address: _address.text.trim(),
+                    );
+                    setState(() {
+                      _mine.add(entry);
+                      _saved = true;
+                    });
+                    await _saveList();
+                    _name.clear();
+                    _phone.clear();
+                    _area.clear();
+                    _address.clear();
+                    // Local card is already saved; server result is
+                    // reported separately and never rewrites it.
+                    await _submitToServer(entry);
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFC8102E),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                  child: const Text('ڈونر شامل کریں 🩸',
+                      style: TextStyle(fontSize: 17)),
+                ),
+              ),
+              if (_saved)
+                const Padding(
+                  padding: EdgeInsets.only(top: 12),
+                  child: Text(
+                    '✔ شکریہ! آپ کی رجسٹریشن اس فون میں محفوظ ہو گئی ہے۔',
+                    style: TextStyle(
+                        color: Colors.green, fontWeight: FontWeight.w700),
+                  ),
+                ),
+              if (_serverBusy)
+                const Padding(
+                  padding: EdgeInsets.only(top: 8),
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                      SizedBox(width: 8),
+                      Text('سرور پر اندراج ہو رہا ہے…',
+                          style: TextStyle(color: Colors.black54)),
+                    ],
+                  ),
+                ),
+              if (_serverMessage != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(
+                    _serverMessage!,
+                    style: TextStyle(
+                        color: _serverOk == true
+                            ? Colors.green
+                            : Colors.red,
+                        fontWeight: FontWeight.w700),
+                  ),
+                ),
+              if (_serverOk == false && _mine.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: TextButton(
+                    onPressed:
+                        _serverBusy ? null : () => _submitToServer(_mine.last),
+                    child: const Text('سرور پر دوبارہ بھیجیں'),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        if (config.donorCard && _mine.isNotEmpty) ...[
+          sectionTitle('🪪 میرا ڈونر کارڈ'),
+          const Text(
+            'یہ اندراجات صرف اس فون میں محفوظ ہیں — سوسائٹی کی مرکزی ڈائریکٹری میں شامل ہونے کے لیے ہر کارڈ سے WhatsApp پر تفصیل بھیجیں۔',
+            style: TextStyle(color: Colors.black54),
+          ),
+          const SizedBox(height: 8),
+          ..._mine.map((e) => Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          CircleAvatar(
+                            backgroundColor: const Color(0xFFC8102E),
+                            foregroundColor: Colors.white,
+                            child: Directionality(
+                              textDirection: TextDirection.ltr,
+                              child: Text(e.group,
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.w900,
+                                      fontSize: 13)),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(e.name,
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.w800,
+                                    fontSize: 17)),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.delete, color: Colors.red),
+                            onPressed: () async {
+                              setState(() => _mine.remove(e));
+                              await _saveList();
+                            },
+                          ),
+                        ],
+                      ),
+                      Text('📍 ${e.address} — ${e.area}، ${e.district}'),
+                      Directionality(
+                        textDirection: TextDirection.ltr,
+                        child: Text('📞 ${e.phone}',
+                            textAlign: TextAlign.left),
+                      ),
+                      const SizedBox(height: 8),
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton.icon(
+                          onPressed: () => AdService.runWithAd(() =>
+                              whatsappNumber(config.chairman.wa,
+                                  e.whatsappMessage())),
+                          icon: const Icon(Icons.chat),
+                          label: Text(
+                              '${config.chairman.displayLine} کو WhatsApp پر بھیجیں'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF25D366),
+                            foregroundColor: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              )),
+        ],
+      ],
+        );
+      },
+    );
+  }
+}
+
+// ============================ FEED POST SHEET ============================
+
+/// "اپ ڈیٹ پوسٹ کریں" sheet: photo via camera OR gallery, fields
+/// name / area / blood-group dropdown / patient / place / caption,
+/// PLUS a member-code field. The member code lives ONLY in this
+/// widget's state for this one post — it is never stored anywhere.
+/// Returns true when the post succeeded (parent refreshes the feed).
+class FeedPostSheet extends StatefulWidget {
+  const FeedPostSheet({super.key});
+
+  @override
+  State<FeedPostSheet> createState() => _FeedPostSheetState();
+}
+
+class _FeedPostSheetState extends State<FeedPostSheet> {
+  final _formKey = GlobalKey<FormState>();
+  final _name = TextEditingController();
+  final _area = TextEditingController();
+  final _patient = TextEditingController();
+  final _place = TextEditingController();
+  final _caption = TextEditingController();
+  final _memberCode = TextEditingController();
+  String _group = bloodGroups.first;
+  String? _photoBase64;
+  bool _busy = false;
+  bool _picking = false;
+  int? _uploadPct;
+  String? _error;
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _area.dispose();
+    _patient.dispose();
+    _place.dispose();
+    _caption.dispose();
+    _memberCode.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pick(ImageSource source) async {
+    setState(() {
+      _picking = true;
+      _error = null;
+    });
+    final result = await ApiService.pickPhoto(source);
+    if (!mounted) return;
+    setState(() {
+      _picking = false;
+      if (result.cancelled) {
+        // User backed out of the picker: no error, no change.
+      } else if (result.error != null) {
+        _error = result.error;
+      } else {
+        _photoBase64 = result.base64;
+        _error = null;
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Directionality(
+      textDirection: TextDirection.rtl,
+      child: Padding(
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom,
+          left: 16,
+          right: 16,
+          top: 16,
+        ),
+        child: SingleChildScrollView(
+          child: Form(
+            key: _formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('📸 اپ ڈیٹ پوسٹ کریں',
+                    style:
+                        TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: () => _pick(ImageSource.camera),
+                        icon: const Icon(Icons.photo_camera),
+                        label: const Text('کیمرہ'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: () => _pick(ImageSource.gallery),
+                        icon: const Icon(Icons.photo_library),
+                        label: const Text('گیلری'),
+                      ),
+                    ),
+                  ],
+                ),
+                if (_picking)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 8),
+                    child: Text('تصویر تیار ہو رہی ہے…',
+                        style: TextStyle(color: Colors.black54)),
+                  ),
+                if (_photoBase64 != null)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 8),
+                    child: Text('✔ تصویر منتخب ہو گئی ہے۔',
+                        style: TextStyle(
+                            color: Colors.green,
+                            fontWeight: FontWeight.w700)),
+                  ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: _name,
+                  decoration: const InputDecoration(
+                      labelText: 'نام *', border: OutlineInputBorder()),
+                  validator: (v) =>
+                      (v == null || v.trim().isEmpty) ? 'نام ضروری ہے' : null,
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: _area,
+                  decoration: const InputDecoration(
+                      labelText: 'علاقہ *', border: OutlineInputBorder()),
+                  validator: (v) =>
+                      (v == null || v.trim().isEmpty) ? 'علاقہ ضروری ہے' : null,
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  value: _group,
+                  decoration: const InputDecoration(
+                      labelText: 'بلڈ گروپ *', border: OutlineInputBorder()),
+                  items: bloodGroups
+                      .map((g) => DropdownMenuItem(
+                            value: g,
+                            child: Directionality(
+                              textDirection: TextDirection.ltr,
+                              child: Text(g),
+                            ),
+                          ))
+                      .toList(),
+                  onChanged: (v) => setState(() => _group = v!),
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: _patient,
+                  decoration: const InputDecoration(
+                      labelText: 'مریض کا نام (اختیاری)',
+                      border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: _place,
+                  decoration: const InputDecoration(
+                      labelText: 'ہسپتال / جگہ (اختیاری)',
+                      border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: _caption,
+                  maxLines: 3,
+                  decoration: const InputDecoration(
+                      labelText: 'اپ ڈیٹ کی تفصیل *',
+                      border: OutlineInputBorder()),
+                  validator: (v) => (v == null || v.trim().isEmpty)
+                      ? 'تفصیل ضروری ہے'
+                      : null,
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: _memberCode,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                      labelText: 'ممبر کوڈ *',
+                      border: OutlineInputBorder()),
+                  validator: (v) => (v == null || v.trim().isEmpty)
+                      ? 'ممبر کوڈ ضروری ہے'
+                      : null,
+                ),
+                if (_error != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(_error!,
+                        style: const TextStyle(
+                            color: Colors.red, fontWeight: FontWeight.w700)),
+                  ),
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: _busy
+                        ? null
+                        : () async {
+                            if (!_formKey.currentState!.validate()) return;
+                            setState(() {
+                              _busy = true;
+                              _error = null;
+                              _uploadPct = null;
+                            });
+                            final result =
+                                await ApiService.submitFeedPost(
+                              name: _name.text.trim(),
+                              area: _area.text.trim(),
+                              group: _group,
+                              patient: _patient.text.trim(),
+                              place: _place.text.trim(),
+                              caption: _caption.text.trim(),
+                              photoBase64: _photoBase64,
+                              // Session-only: read from the field and
+                              // never written to any storage.
+                              memberCode: _memberCode.text.trim(),
+                              onUploadProgress: (sent, total) {
+                                if (!mounted) return;
+                                setState(() => _uploadPct = total > 0
+                                    ? (sent / total * 100).round()
+                                    : null);
+                              },
+                            );
+                            if (!mounted) return;
+                            setState(() => _busy = false);
+                            if (result.ok) {
+                              Navigator.pop(context, true);
+                            } else {
+                              setState(() => _error = result.error);
+                            }
+                          },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFC8102E),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
+                    child: Text(_busy
+                        ? (_photoBase64 != null && _uploadPct != null
+                            ? 'اپ لوڈ ہو رہا ہے… $_uploadPct٪ مکمل — ${100 - _uploadPct!}٪ باقی'
+                            : 'پوسٹ ہو رہا ہے…')
+                        : 'پوسٹ کریں'),
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ============================ ADMIN SCREEN ============================
+
+/// Admin PIN screen. The PIN is held ONLY in this widget's state for
+/// this one session — never in SharedPreferences, never in code.
+/// On success it shows the admin donor list (the ONLY view in the app
+/// that renders phone numbers, with call + WhatsApp buttons). On 401
+/// it shows a generic message that never hints at the real PIN.
+/// Admins are Jaani + Sami Ullah Watto; the app does not hardcode
+/// who they are — the PIN is the gate.
+class AdminScreen extends StatefulWidget {
+  const AdminScreen({super.key});
+
+  @override
+  State<AdminScreen> createState() => _AdminScreenState();
+}
+
+class _AdminScreenState extends State<AdminScreen> {
+  final _pin = TextEditingController();
+  bool _busy = false;
+  String? _error;
+  List<AdminDonor>? _donors;
+
+  @override
+  void dispose() {
+    _pin.dispose();
+    super.dispose();
+  }
+
+  /// Normalizes a stored phone into tel:/wa.me forms. Only used here,
+  /// in the admin view — nowhere else in the app handles donor phones.
+  String _tel(String phone) {
+    final digits = phone.replaceAll(RegExp(r'[^0-9]'), '');
+    if (digits.startsWith('0')) return '+92${digits.substring(1)}';
+    if (digits.startsWith('92')) return '+$digits';
+    return digits.isEmpty ? '' : '+$digits';
+  }
+
+  String _wa(String phone) {
+    final tel = _tel(phone);
+    return tel.startsWith('+') ? tel.substring(1) : tel;
+  }
+
+  Future<void> _load() async {
+    if (_pin.text.trim().isEmpty) {
+      setState(() => _error = 'PIN لکھیں۔');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+      _donors = null;
+    });
+    // Session-only: the PIN goes out as one header and is never stored.
+    final result = await ApiService.fetchAdminDonors(_pin.text.trim());
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      if (result.ok) {
+        _donors = result.data ?? [];
+      } else {
+        _error = result.error;
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Directionality(
+      textDirection: TextDirection.rtl,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('ایڈمن — ڈونرز لسٹ'),
+          backgroundColor: const Color(0xFFC8102E),
+          foregroundColor: Colors.white,
+          centerTitle: true,
+        ),
+        body: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextField(
+                controller: _pin,
+                obscureText: true,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                    labelText: 'ایڈمن PIN', border: OutlineInputBorder()),
+                onSubmitted: (_) => _load(),
+              ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: _busy ? null : _load,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFC8102E),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                  child: Text(_busy ? 'لوڈ ہو رہا ہے…' : 'ایڈمن لسٹ دیکھیں'),
+                ),
+              ),
+              if (_error != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Text(_error!,
+                      style: const TextStyle(
+                          color: Colors.red, fontWeight: FontWeight.w700)),
+                ),
+              const SizedBox(height: 12),
+              if (_donors != null)
+                Expanded(
+                  child: _donors!.isEmpty
+                      ? const Center(
+                          child: Text('ابھی کوئی ڈونر رجسٹر نہیں۔'))
+                      : ListView(
+                          children: _donors!.map((d) {
+                            final tel = _tel(d.phone);
+                            final wa = _wa(d.phone);
+                            return Card(
+                              child: Padding(
+                                padding: const EdgeInsets.all(12),
+                                child: Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        CircleAvatar(
+                                          backgroundColor:
+                                              const Color(0xFFC8102E),
+                                          foregroundColor: Colors.white,
+                                          child: Directionality(
+                                            textDirection:
+                                                TextDirection.ltr,
+                                            child: Text(d.group,
+                                                style: const TextStyle(
+                                                    fontWeight:
+                                                        FontWeight.w900,
+                                                    fontSize: 13)),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 10),
+                                        Expanded(
+                                          child: Text(d.name,
+                                              style: const TextStyle(
+                                                  fontWeight:
+                                                      FontWeight.w800,
+                                                  fontSize: 17)),
+                                        ),
+                                      ],
+                                    ),
+                                    if (d.address.isNotEmpty)
+                                      Text('📍 ${d.address}'),
+                                    Text(
+                                        '${d.area}، ${d.district}، ${d.province}',
+                                        style: const TextStyle(
+                                            color: Colors.black54)),
+                                    const SizedBox(height: 8),
+                                    Row(
+                                      children: [
+                                        Expanded(
+                                          child: ElevatedButton.icon(
+                                            onPressed: tel.isEmpty
+                                                ? null
+                                                : () => callNumber(tel),
+                                            icon: const Icon(Icons.phone),
+                                            label: const Text('کال کریں'),
+                                            style: ElevatedButton.styleFrom(
+                                              backgroundColor:
+                                                  const Color(0xFFC8102E),
+                                              foregroundColor: Colors.white,
+                                            ),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Expanded(
+                                          child: ElevatedButton.icon(
+                                            onPressed: wa.isEmpty
+                                                ? null
+                                                : () => whatsappNumber(wa),
+                                            icon: const Icon(Icons.chat),
+                                            label: const Text('WhatsApp'),
+                                            style: ElevatedButton.styleFrom(
+                                              backgroundColor:
+                                                  const Color(0xFF25D366),
+                                              foregroundColor: Colors.white,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    Directionality(
+                                      textDirection: TextDirection.ltr,
+                                      child: Text(d.phone,
+                                          style: const TextStyle(
+                                              color: Colors.black54)),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          }).toList(),
+                        ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ============================ INFO TAB ============================
+
+class InfoTab extends StatelessWidget {
+  const InfoTab({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<DonerConfig>(
+      valueListenable: ConfigService.notifier,
+      builder: (context, config, _) {
+        return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        sectionTitle('ہمارے بارے میں'),
+        Text(
+          config.about,
+          style: const TextStyle(color: Colors.black54),
+        ),
+        const SizedBox(height: 8),
+        _infoCard('🎯', 'ہمارا مشن', config.mission),
+        _infoCard('🤝', 'رضاکار ڈونرز', config.volunteers),
+        _infoCard('📢', 'آگاہی', config.awareness),
+        sectionTitle('خون عطیہ کیسے ہوتا ہے؟'),
+        ...config.donationProcess.asMap().entries.map((e) => _infoCard(
+              '${e.key + 1}', e.value.step, e.value.text)),
+        _infoCard('✅', 'کون عطیہ دے سکتا ہے؟', config.eligibility),
+        _infoCard('⏸️', 'کب عطیہ مؤخر کریں؟', config.deferWhen),
+        if (config.compatibility) ...[
+          sectionTitle('بلڈ گروپس — کون کس کو خون دے سکتا ہے؟'),
+        Text(
+          config.compatibilityNote,
+          style: const TextStyle(color: Colors.black54),
+        ),
+        const SizedBox(height: 8),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(8),
+            child: Table(
+              columnWidths: const {
+                0: FlexColumnWidth(1),
+                1: FlexColumnWidth(2),
+              },
+              children: [
+                const TableRow(children: [
+                  Padding(
+                      padding: EdgeInsets.all(8),
+                      child: Text('ڈونر کا گروپ',
+                          style: TextStyle(fontWeight: FontWeight.w900))),
+                  Padding(
+                      padding: EdgeInsets.all(8),
+                      child: Text('کن مریضوں کو دے سکتا ہے',
+                          style: TextStyle(fontWeight: FontWeight.w900))),
+                ]),
+                ...canDonateTo.entries.map((e) => TableRow(children: [
+                      Padding(
+                        padding: const EdgeInsets.all(8),
+                        child: Directionality(
+                          textDirection: TextDirection.ltr,
+                          child: Text(e.key,
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.w800)),
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.all(8),
+                        child: Directionality(
+                          textDirection: TextDirection.ltr,
+                          child: Text(
+                              e.value.join(', ') == bloodGroups.join(', ')
+                                  ? 'تمام گروپس'
+                                  : e.value.join(', ')),
+                        ),
+                      ),
+                    ])),
+              ],
+            ),
+          ),
+        ),
+        ],
+        sectionTitle('ہماری قیادت'),
+        _leaderCard('assets/chairman.jpg', config.chairman.name,
+            config.chairman.title, config.leadershipChairman),
+        _leaderCard('assets/spokesman.png', config.spokesperson.name,
+            config.spokesperson.title, config.leadershipSpokesperson),
+        sectionTitle('عام سوالات'),
+        ...config.faq.map((f) => _infoCard('؟', f.q, f.a)),
+        const SizedBox(height: 20),
+        Card(
+          color: const Color(0xFF171D26),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              children: [
+                ClipOval(
+                  child: Image.asset('assets/logo.jpg',
+                      width: 64, height: 64, fit: BoxFit.cover),
+                ),
+                const SizedBox(height: 8),
+                const Text(societyName,
+                    style: TextStyle(
+                        color: Colors.white, fontWeight: FontWeight.w800)),
+                const Directionality(
+                  textDirection: TextDirection.ltr,
+                  child: Text(societyNameEn,
+                      style: TextStyle(color: Colors.white54, fontSize: 12)),
+                ),
+                const SizedBox(height: 4),
+                Text('${config.chairman.title}: ${config.chairman.name} • ${config.spokesperson.title}: ${config.spokesperson.name}',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.white70)),
+                const SizedBox(height: 10),
+                contactRow(tel: config.chairman.tel, wa: config.chairman.wa),
+                const SizedBox(height: 10),
+                Text(
+                  config.tagline,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.white70),
+                ),
+                const SizedBox(height: 6),
+                const Text('© 2026 AMAN BLOOD DONOR SOCIETY OF PAKISTAN',
+                    style: TextStyle(color: Colors.white38, fontSize: 12)),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+      ],
+        );
+      },
+    );
+  }
+
+  Widget _infoCard(String icon, String title, String body) {
+    return Card(
+      margin: const EdgeInsets.only(top: 8),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(icon, style: const TextStyle(fontSize: 22)),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title,
+                      style: const TextStyle(fontWeight: FontWeight.w800)),
+                  const SizedBox(height: 2),
+                  Text(body,
+                      style: const TextStyle(color: Colors.black54)),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _leaderCard(
+      String image, String name, String role, String bio) {
+    return Card(
+      margin: const EdgeInsets.only(top: 8),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(14),
+              child: Image.asset(image,
+                  width: 150, height: 190, fit: BoxFit.cover),
+            ),
+            const SizedBox(height: 10),
+            Text(name,
+                style: const TextStyle(
+                    fontSize: 19, fontWeight: FontWeight.w900)),
+            const SizedBox(height: 4),
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
+              decoration: BoxDecoration(
+                color: const Color(0xFFC8102E),
+                borderRadius: BorderRadius.circular(999),
+              ),
+              child: Text(role,
+                  style: const TextStyle(
+                      color: Colors.white, fontWeight: FontWeight.w700)),
+            ),
+            const SizedBox(height: 6),
+            Text(bio,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.black54)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+
+
+
