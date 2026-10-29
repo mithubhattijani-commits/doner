@@ -1120,6 +1120,7 @@ class _SocialPostSheetState extends State<SocialPostSheet> {
                             if (!mounted) return;
                             setState(() => _busy = false);
                             if (result.ok) {
+                              if (!context.mounted) return;
                               Navigator.pop(context, true);
                             } else {
                               setState(() => _error = result.error);
@@ -1331,6 +1332,7 @@ class _SocialCommentsSheetState extends State<SocialCommentsSheet> {
                         setState(() => _busy = false);
                         if (result.ok) {
                           _text.clear();
+                          if (!context.mounted) return;
                           Navigator.pop(context, true);
                         } else {
                           setState(() => _error = result.error);
@@ -1995,7 +1997,7 @@ class _RegisterTabState extends State<RegisterTab> {
               ),
               const SizedBox(height: 12),
               DropdownButtonFormField<String>(
-                value: _province,
+                initialValue: _province,
                 decoration: const InputDecoration(
                     labelText: 'صوبہ *', border: OutlineInputBorder()),
                 items: districts.keys
@@ -2009,7 +2011,7 @@ class _RegisterTabState extends State<RegisterTab> {
               ),
               const SizedBox(height: 12),
               DropdownButtonFormField<String>(
-                value: _district,
+                initialValue: _district,
                 decoration: const InputDecoration(
                     labelText: 'ضلع / شہر *', border: OutlineInputBorder()),
                 items: districtList
@@ -2029,7 +2031,7 @@ class _RegisterTabState extends State<RegisterTab> {
               ),
               const SizedBox(height: 12),
               DropdownButtonFormField<String>(
-                value: _group,
+                initialValue: _group,
                 decoration: const InputDecoration(
                     labelText: 'بلڈ گروپ *', border: OutlineInputBorder()),
                 items: bloodGroups
@@ -2354,7 +2356,7 @@ class _FeedPostSheetState extends State<FeedPostSheet> {
                 ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
-                  value: _group,
+                  initialValue: _group,
                   decoration: const InputDecoration(
                       labelText: 'بلڈ گروپ *', border: OutlineInputBorder()),
                   items: bloodGroups
@@ -2446,6 +2448,7 @@ class _FeedPostSheetState extends State<FeedPostSheet> {
                             if (!mounted) return;
                             setState(() => _busy = false);
                             if (result.ok) {
+                              if (!context.mounted) return;
                               Navigator.pop(context, true);
                             } else {
                               setState(() => _error = result.error);

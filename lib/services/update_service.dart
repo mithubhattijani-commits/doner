@@ -340,7 +340,7 @@ class UpdateService {
       barrierDismissible: false,
       builder: (_) => ValueListenableBuilder<UpdateDownloadProgress?>(
         valueListenable: progress,
-        builder: (_, value, __) {
+        builder: (_, value, _) {
           final known = value != null && value.known;
           return AlertDialog(
             title: const Text('اپ ڈیٹ ڈاؤن لوڈ ہو رہا ہے'),
