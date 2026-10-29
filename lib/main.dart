@@ -1411,12 +1411,6 @@ class _DirectoryTabState extends State<DirectoryTab> {
     });
   }
 
-  String _provinceOf(String district) {
-    for (final e in districts.entries) {
-      if (e.value.contains(district)) return e.key;
-    }
-    return '';
-  }
 
   @override
   Widget build(BuildContext context) {

@@ -348,12 +348,12 @@ class UpdateService {
               mainAxisSize: MainAxisSize.min,
               children: [
                 LinearProgressIndicator(
-                    value: known ? value!.fraction : null),
+                    value: known ? value.fraction : null),
                 const SizedBox(height: 12),
                 Text(
                   known
-                      ? '${value!.percentDone}٪ مکمل — '
-                          '${value!.percentLeft}٪ باقی\n${value!.mbLine}'
+                      ? '${value.percentDone}٪ مکمل — '
+                          '${value.percentLeft}٪ باقی\n${value.mbLine}'
                       : 'ڈاؤن لوڈ ہو رہا ہے…',
                 ),
               ],
