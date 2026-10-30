@@ -85,9 +85,12 @@ jobs:
           fi
         env:
           EXPECTED_SIGNER_SHA256: "f2c17e575f76683c67d316d1de8f140c6521afdacc1c17d64120f78a20aa839e"
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
+      - name: Upload APK to Release
+        uses: softprops/action-gh-release@v2
         with:
+          tag_name: latest
+          name: Latest Build
+          files: build/app/outputs/flutter-apk/app-debug.apk
           name: doner-debug-apk
           path: build/app/outputs/flutter-apk/app-debug.apk
           if-no-files-found: error
