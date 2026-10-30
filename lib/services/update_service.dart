@@ -49,6 +49,32 @@ class UpdateInfo {
   final String notes;
 }
 
+/// Distinguished outcome of a manual update check (Jaani 31 Oct 2026:
+/// "no new version" vs "no internet" vs "update file not found" must
+/// show different messages, not one shared message).
+enum UpdateCheckResult {
+  /// A newer version is available (details in [UpdateCheckOutcome.update]).
+  available,
+
+  /// Installed version is already the latest.
+  upToDate,
+
+  /// No network connectivity.
+  noInternet,
+
+  /// Manifest unreachable (404 / bad response / bad JSON).
+  manifestNotFound,
+}
+
+/// Combined result of [UpdateService.checkForUpdate]: the distinguished
+/// status plus the [UpdateInfo] when a newer version exists.
+class UpdateCheckOutcome {
+  const UpdateCheckOutcome(this.status, [this.update]);
+
+  final UpdateCheckResult status;
+  final UpdateInfo? update;
+}
+
 /// Live progress of the launch APK download, shown in the in-flow
 /// banner (never a modal). Null when no launch download is running.
 /// [total] is -1 when the server hides its size (then the banner shows
@@ -113,10 +139,25 @@ class UpdateService {
     }
   }
 
-  /// Returns update info only when a NEWER version exists.
-  /// Never throws: any failure (no network, missing manifest, bad
-  /// JSON, bad version) simply means "no update prompt".
-  static Future<UpdateInfo?> fetchUpdate() async {
+  /// Quick connectivity probe: resolves the update host. Used by the
+  /// manual check to distinguish "no internet" from other failures.
+  static Future<bool> _hasInternetConnection() async {
+    try {
+      final result = await InternetAddress.lookup('nigraantv.xyz')
+          .timeout(const Duration(seconds: 5));
+      return result.isNotEmpty && result.first.rawAddress.isNotEmpty;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Manual-check entry point with distinguished failure modes.
+  /// Returns the status plus [UpdateInfo] when a newer version exists.
+  /// Never throws.
+  static Future<UpdateCheckOutcome> checkForUpdate() async {
+    if (!await _hasInternetConnection()) {
+      return const UpdateCheckOutcome(UpdateCheckResult.noInternet);
+    }
     HttpClient? client;
     try {
       client = HttpClient()
@@ -124,27 +165,49 @@ class UpdateService {
       final request = await client.getUrl(Uri.parse(manifestUrl));
       final response =
           await request.close().timeout(const Duration(seconds: 20));
-      if (response.statusCode != HttpStatus.ok) return null;
+      if (response.statusCode != HttpStatus.ok) {
+        return const UpdateCheckOutcome(UpdateCheckResult.manifestNotFound);
+      }
       final body = await response.transform(utf8.decoder).join();
       final data = jsonDecode(body);
-      if (data is! Map<String, dynamic>) return null;
+      if (data is! Map<String, dynamic>) {
+        return const UpdateCheckOutcome(UpdateCheckResult.manifestNotFound);
+      }
       final remoteCode = data['versionCode'];
       final url = data['url'];
-      if (remoteCode is! int || url is! String || url.isEmpty) return null;
+      if (remoteCode is! int || url is! String || url.isEmpty) {
+        return const UpdateCheckOutcome(UpdateCheckResult.manifestNotFound);
+      }
       final info = await PackageInfo.fromPlatform();
       final currentCode = int.tryParse(info.buildNumber) ?? 0;
-      if (remoteCode <= currentCode) return null;
-      return UpdateInfo(
-        versionCode: remoteCode,
-        versionName: (data['versionName'] as String?) ?? 'v$remoteCode',
-        url: url,
-        notes: (data['notes'] as String?) ?? '',
+      if (remoteCode <= currentCode) {
+        return const UpdateCheckOutcome(UpdateCheckResult.upToDate);
+      }
+      return UpdateCheckOutcome(
+        UpdateCheckResult.available,
+        UpdateInfo(
+          versionCode: remoteCode,
+          versionName: (data['versionName'] as String?) ?? 'v$remoteCode',
+          url: url,
+          notes: (data['notes'] as String?) ?? '',
+        ),
       );
+    } on SocketException {
+      return const UpdateCheckOutcome(UpdateCheckResult.noInternet);
     } catch (_) {
-      return null;
+      return const UpdateCheckOutcome(UpdateCheckResult.manifestNotFound);
     } finally {
       client?.close(force: true);
     }
+  }
+
+  /// Returns update info only when a NEWER version exists.
+  /// Never throws: any failure (no network, missing manifest, bad
+  /// JSON, bad version) simply means "no update prompt".
+  /// Used by the silent launch check.
+  static Future<UpdateInfo?> fetchUpdate() async {
+    final outcome = await checkForUpdate();
+    return outcome.update;
   }
 
   /// Launch check: silent unless a newer, NOT-dismissed version exists.
@@ -186,23 +249,43 @@ class UpdateService {
     _showInstallPrompt(context, update, file);
   }
 
-  /// Manual check: tells the user when nothing newer was found, and
-  /// shows the update dialog regardless of dismissal, as before.
+  /// Manual check: shows a specific message for each outcome —
+  /// up-to-date vs no internet vs update file not found (Jaani 31 Oct
+  /// 2026: these must NOT share one message). Shows the update dialog
+  /// regardless of dismissal, as before.
   static Future<void> checkManually(BuildContext context) async {
-    final update = await fetchUpdate();
+    final outcome = await checkForUpdate();
     if (!context.mounted) return;
-    if (update == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'کوئی نیا ورژن نہیں ملا۔ انٹرنیٹ یا اپ ڈیٹ فائل '
-            'نہ ملنے پر بھی یہی دکھتا ہے۔',
+    switch (outcome.status) {
+      case UpdateCheckResult.available:
+        if (outcome.update != null) {
+          showUpdateDialog(context, outcome.update!);
+        }
+        break;
+      case UpdateCheckResult.upToDate:
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('آپ کا ایپ اپ ٹو ڈیٹ ہے۔'),
           ),
-        ),
-      );
-      return;
+        );
+        break;
+      case UpdateCheckResult.noInternet:
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'انٹرنیٹ کنکشن نہیں ہے — چیک کرنے کے لیے انٹرنیٹ آن کریں۔',
+            ),
+          ),
+        );
+        break;
+      case UpdateCheckResult.manifestNotFound:
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('اپ ڈیٹ فائل نہیں ملی — بعد میں کوشش کریں۔'),
+          ),
+        );
+        break;
     }
-    showUpdateDialog(context, update);
   }
 
   static void showUpdateDialog(BuildContext context, UpdateInfo update) {
