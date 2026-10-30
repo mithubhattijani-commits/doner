@@ -1,21 +1,26 @@
-/// Doner — society API client (live directory + feed + admin).
+/// Doner — society API client (live directory + feed + admin + auth).
 ///
-/// Base: https://doner-donor-society.mithubhattijani.workers.dev
+/// Base: https://aman-blood-donor-society.mithubhattijani.workers.dev
+/// (moved 31 Oct 2026; the old doner-donor-society host is retired.)
 /// Contract (owned by the Worker, not this app):
 ///   GET  /api/donors        public: name/group/province/district/area/
 ///                          address/ts only — NO phone, NO photo.
 ///   POST /api/donors        name/phone/province/district/area/address/group
 ///                          (immediately public, phone never shown publicly).
 ///   GET  /api/feed          public, newest first.
-///   POST /api/feed          header X-Member-Code; fields name/area/group/
-///                          patient/place/caption/photo (data URL).
+///   POST /api/feed          Authorization: Bearer <token>.
 ///   GET  /api/admin/donors  header X-Admin-Key; the ONLY endpoint that
 ///                          returns phone numbers, shown only in the admin view.
+///   Auth + social feed live in AuthService (services/auth_service.dart):
+///   login/register/logout/me and /api/feed/posts* (posts, likes,
+///   comments), all gated by the Authorization: Bearer header. The
+///   old MEMBER_CODE system is gone (Jaani, 31 Oct 2026).
 ///
 /// PRIVACY: phone numbers are never logged and never rendered outside the
 /// admin view. Every method returns errors as Urdu strings and never
-/// throws to the UI. Secrets (admin PIN, member code) are session-only
-/// in the UI layer — this service never stores them.
+/// throws to the UI. The login token lives in SharedPreferences
+/// (doner_auth_token); the admin PIN stays session-only in the UI layer —
+/// this service never stores it.
 library;
 
 import 'dart:convert';
@@ -24,9 +29,9 @@ import 'dart:io';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// Society API base (live, verified 26 Oct 2026).
+/// Society API base (live, verified 31 Oct 2026).
 const String societyApiBase =
-    'https://doner-donor-society.mithubhattijani.workers.dev';
+    'https://aman-blood-donor-society.mithubhattijani.workers.dev';
 
 /// A result that never throws: [data] on success, [error] (Urdu) on failure.
 class ApiResult<T> {
@@ -154,6 +159,22 @@ class ApiService {
       'انٹرنیٹ نہیں ملا۔ کنکشن چیک کر کے دوبارہ کوشش کریں۔';
   static const _serverBusy =
       'سرور سے جواب نہیں ملا۔ تھوڑی دیر بعد دوبارہ کوشش کریں۔';
+
+  /// Authorization header for the logged-in member, or null when logged
+  /// out. Reads `doner_auth_token` directly from SharedPreferences —
+  /// the key is canonical in AuthService; this private duplicate keeps
+  /// the dependency one-directional (auth_service.dart imports
+  /// ApiResult from this file, so this file must not import it back).
+  static Future<Map<String, String>?> _authHeaders() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final token = prefs.getString('doner_auth_token');
+      if (token == null || token.isEmpty) return null;
+      return {'Authorization': 'Bearer $token'};
+    } catch (_) {
+      return null;
+    }
+  }
 
   static Future<ApiResult<Map<String, dynamic>?>> _get(
     String path, {
@@ -302,9 +323,9 @@ class ApiService {
     return ApiResult.ok(_listOf(r, FeedPost.fromJson));
   }
 
-  /// Posts a feed update. [memberCode] is session-only (caller holds it
-  /// in widget state, never in storage). On 401 the message never hints
-  /// at the real code.
+  /// Posts a feed update. Requires login: the bearer token goes in
+  /// the Authorization header (the old X-Member-Code system is gone).
+  /// On 401 the message never hints at any secret.
   static Future<ApiResult<void>> submitFeedPost({
     required String name,
     required String area,
@@ -313,9 +334,8 @@ class ApiService {
     required String place,
     required String caption,
     String? photoBase64,
-    required String memberCode,
     void Function(int sent, int total)? onUploadProgress,
-  }) {
+  }) async {
     if (photoBase64 != null && photoBase64.length * 3 ~/ 4 > 800 * 1024) {
       return Future.value(
         const ApiResult.err('تصویر بہت بڑی ہے — چھوٹی تصویر منتخب کریں۔'),
@@ -335,8 +355,8 @@ class ApiService {
     return _post(
       '/api/feed',
       body,
-      headers: {'X-Member-Code': memberCode},
-      unauthorizedMessage: 'ممبر کوڈ درست نہیں',
+      headers: await _authHeaders(),
+      unauthorizedMessage: 'لاگ اِن ضروری ہے',
       onUploadProgress: onUploadProgress,
     );
   }
@@ -363,10 +383,11 @@ class ApiService {
   }
 
 
-  /// Per-device anonymous member identity, used ONLY so a like toggle
-  /// is per member (one like per device) instead of per shared member
-  /// code. It is NOT a login, NOT a phone number, and is never shown
-  /// in the UI. Stored locally so the same device keeps its likes.
+  /// Per-device anonymous member identity. LEGACY: the like toggle is
+  /// now per logged-in account (bearer token), so nothing calls this
+  /// anymore. Kept only so older stored values don't break anything
+  /// that might still read the key. It was never a login, never a
+  /// phone number, and is never shown in the UI.
   static Future<String> memberId() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -419,66 +440,59 @@ class ApiService {
     }
   }
 
-  /// Social home-feed posts, newest first. Public read: no member code
-  /// needed to VIEW. An empty list is honest (the feed starts empty);
-  /// a backend that does not serve these endpoints yet surfaces as an
-  /// error, never as fake posts.
-  static Future<ApiResult<List<SocialPost>>> fetchSocialPosts(
-    String memberId,
-  ) async {
+  /// Social home-feed posts, newest first. Public read: no login
+  /// needed to VIEW. The bearer token is sent when logged in so the
+  /// server can mark each post's `liked` state for this member.
+  /// An empty list is honest (the feed starts empty); a backend that
+  /// does not serve these endpoints yet surfaces as an error, never
+  /// as fake posts.
+  static Future<ApiResult<List<SocialPost>>> fetchSocialPosts() async {
     final r = await _get(
-      '/api/feed/posts?memberId=${Uri.encodeComponent(memberId)}',
+      '/api/feed/posts',
+      headers: await _authHeaders(),
     );
     if (!r.ok) return ApiResult.err(r.error);
     return ApiResult.ok(_listOf(r, SocialPost.fromJson));
   }
 
-  /// Creates a social post (camera photo + text). Gated EXACTLY like
-  /// the existing home-feed posts: the session-only [memberCode] goes
-  /// in the X-Member-Code header, and the server fails closed (401)
-  /// when MEMBER_CODE is unset or the code does not match. The code is
-  /// never stored. No phone number is ever sent with a post.
+  /// Creates a social post (camera photo + text). Requires login: the
+  /// bearer token goes in the Authorization header, and the server
+  /// sets the author from the logged-in account — no author or member
+  /// code is sent. No phone number is ever sent with a post.
   static Future<ApiResult<void>> createSocialPost({
-    required String author,
     required String text,
     String? photoBase64,
-    required String memberCode,
     void Function(int sent, int total)? onUploadProgress,
-  }) {
+  }) async {
     if (photoBase64 != null && photoBase64.length * 3 ~/ 4 > 800 * 1024) {
       return Future.value(
         const ApiResult.err('تصویر بہت بڑی ہے — چھوٹی تصویر منتخب کریں۔'),
       );
     }
-    final body = <String, dynamic>{'author': author, 'text': text};
+    final body = <String, dynamic>{'text': text};
     if (photoBase64 != null && photoBase64.isNotEmpty) {
       body['photo'] = 'data:image/jpeg;base64,$photoBase64';
     }
     return _post(
       '/api/feed/posts',
       body,
-      headers: {'X-Member-Code': memberCode},
-      unauthorizedMessage: 'ممبر کوڈ درست نہیں',
+      headers: await _authHeaders(),
+      unauthorizedMessage: 'لاگ اِن ضروری ہے',
       onUploadProgress: onUploadProgress,
     );
   }
 
-  /// Toggles this member's like on a post. Returns (liked, likeCount)
-  /// from the server; the UI trusts the server reply, never a local
-  /// guess. Member-gated with the same X-Member-Code header as posts.
+  /// Toggles the logged-in member's like on a post. Returns
+  /// (liked, likeCount) from the server; the UI trusts the server
+  /// reply, never a local guess. Requires login (bearer header).
   static Future<ApiResult<(bool, int)>> toggleSocialLike({
     required String postId,
-    required String memberCode,
-    required String memberId,
   }) async {
     final r = await _postJson(
       '/api/feed/posts/${Uri.encodeComponent(postId)}/like',
       const {},
-      headers: {
-        'X-Member-Code': memberCode,
-        'X-Member-Id': memberId,
-      },
-      unauthorizedMessage: 'ممبر کوڈ درست نہیں',
+      headers: await _authHeaders(),
+      unauthorizedMessage: 'لاگ اِن ضروری ہے',
     );
     if (!r.ok) return ApiResult.err(r.error);
     final data = r.data ?? {};
@@ -500,24 +514,18 @@ class ApiService {
     return ApiResult.ok(_listOf(r, SocialComment.fromJson));
   }
 
-  /// Adds a text comment. Member-gated with the same X-Member-Code
-  /// header as posts; author is a display name typed by the member —
-  /// never a phone number.
+  /// Adds a text comment. Requires login: the bearer token goes in
+  /// the Authorization header, and the server sets the author from
+  /// the logged-in account — never a phone number.
   static Future<ApiResult<void>> addSocialComment({
     required String postId,
-    required String author,
     required String text,
-    required String memberCode,
-    required String memberId,
-  }) {
+  }) async {
     return _post(
       '/api/feed/posts/${Uri.encodeComponent(postId)}/comments',
-      {'author': author, 'text': text},
-      headers: {
-        'X-Member-Code': memberCode,
-        'X-Member-Id': memberId,
-      },
-      unauthorizedMessage: 'ممبر کوڈ درست نہیں',
+      {'text': text},
+      headers: await _authHeaders(),
+      unauthorizedMessage: 'لاگ اِن ضروری ہے',
     );
   }
 

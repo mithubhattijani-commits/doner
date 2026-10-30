@@ -51,6 +51,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'data.dart';
 import 'services/ad_service.dart';
 import 'services/api_service.dart';
+import 'services/auth_service.dart';
 import 'services/config_service.dart';
 import 'services/unity_ads_service.dart';
 import 'services/update_service.dart';
@@ -402,6 +403,15 @@ class _HomeTabState extends State<HomeTab> {
   }
 
   Future<void> _openPostSheet() async {
+    if (!await AuthService.isLoggedIn()) {
+      if (!mounted) return;
+      final bool? ok = await showModalBottomSheet<bool>(
+        context: context,
+        isScrollControlled: true,
+        builder: (_) => const AuthScreen(),
+      );
+      if (ok != true || !mounted) return;
+    }
     final posted = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
@@ -713,8 +723,6 @@ class SocialFeedTab extends StatefulWidget {
 }
 
 class _SocialFeedTabState extends State<SocialFeedTab> {
-  String _memberId = '';
-  String? _memberCode; // Session-only: never written to storage.
   List<SocialPost> _posts = [];
   bool _loading = false;
   String? _error;
@@ -732,12 +740,10 @@ class _SocialFeedTabState extends State<SocialFeedTab> {
       _loading = true;
       _error = null;
     });
-    final memberId = await ApiService.memberId();
-    final result = await ApiService.fetchSocialPosts(memberId);
+    final result = await ApiService.fetchSocialPosts();
     if (!mounted) return;
     setState(() {
       _loading = false;
-      _memberId = memberId;
       if (result.ok) {
         _posts = result.data ?? [];
       } else {
@@ -746,51 +752,26 @@ class _SocialFeedTabState extends State<SocialFeedTab> {
     });
   }
 
-  /// Asks for the member code once per session (dialog, obscured).
-  /// Returns null when the user backs out. Never stored anywhere.
-  Future<String?> _ensureMemberCode() async {
-    if (_memberCode != null && _memberCode!.isNotEmpty) return _memberCode;
-    final controller = TextEditingController();
-    final code = await showDialog<String>(
+  /// Opens the login/signup sheet when the user is not logged in.
+  /// Returns true when the user is logged in afterwards (either was
+  /// already logged in, or just completed login/signup).
+  Future<bool> _requireLogin() async {
+    if (await AuthService.isLoggedIn()) return true;
+    if (!mounted) return false;
+    final bool? ok = await showModalBottomSheet<bool>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('ممبر کوڈ'),
-        content: TextField(
-          controller: controller,
-          obscureText: true,
-          decoration: const InputDecoration(
-            labelText: 'ممبر کوڈ درج کریں',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('منسوخ'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, controller.text.trim()),
-            child: const Text('جاری رکھیں'),
-          ),
-        ],
-      ),
+      isScrollControlled: true,
+      builder: (_) => const AuthScreen(),
     );
-    controller.dispose();
-    if (code == null || code.isEmpty) return null;
-    _memberCode = code;
-    return code;
+    return ok == true;
   }
 
   Future<void> _toggleLike(SocialPost post) async {
     if (_likingId != null) return;
-    final code = await _ensureMemberCode();
-    if (code == null || !mounted) return;
+    if (!await _requireLogin()) return;
+    if (!mounted) return;
     setState(() => _likingId = post.id);
-    final result = await ApiService.toggleSocialLike(
-      postId: post.id,
-      memberCode: code,
-      memberId: _memberId,
-    );
+    final result = await ApiService.toggleSocialLike(postId: post.id);
     if (!mounted) return;
     setState(() {
       _likingId = null;
@@ -810,6 +791,8 @@ class _SocialFeedTabState extends State<SocialFeedTab> {
   }
 
   Future<void> _openPostSheet() async {
+    if (!await _requireLogin()) return;
+    if (!mounted) return;
     final posted = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
@@ -822,11 +805,7 @@ class _SocialFeedTabState extends State<SocialFeedTab> {
     final changed = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
-      builder: (_) => SocialCommentsSheet(
-        post: post,
-        memberId: _memberId,
-        ensureMemberCode: _ensureMemberCode,
-      ),
+      builder: (_) => SocialCommentsSheet(post: post),
     );
     if (changed == true && mounted) _load();
   }
@@ -838,7 +817,7 @@ class _SocialFeedTabState extends State<SocialFeedTab> {
       children: [
         sectionTitle('سوشل فیڈ'),
         const Text(
-          'سوسائٹی کا روزانہ کا کام — ممبرز کی تصویری اپ ڈیٹس، نئی سے پرانی ترتیب میں۔ پوسٹ، لائک اور کمنٹ صرف ممبر کوڈ سے۔',
+          'سوسائٹی کا روزانہ کا کام — ممبرز کی تصویری اپ ڈیٹس، نئی سے پرانی ترتیب میں۔ پوسٹ، لائک اور کمنٹ کے لیے لاگ اِن کریں۔',
           style: TextStyle(color: Colors.black54),
         ),
         const SizedBox(height: 12),
@@ -987,8 +966,9 @@ class _SocialFeedTabState extends State<SocialFeedTab> {
   }
 }
 
-/// Post-creation sheet: camera photo + text + author name, gated by
-/// the session-only member code (same mechanism as FeedPostSheet).
+/// Post-creation sheet: camera photo + text. Requires login (the
+/// parent opens AuthScreen first); the author name comes from the
+/// logged-in account — the server sets it, never the client.
 /// Returns true when the post succeeded (parent refreshes the feed).
 class SocialPostSheet extends StatefulWidget {
   const SocialPostSheet({super.key});
@@ -999,9 +979,8 @@ class SocialPostSheet extends StatefulWidget {
 
 class _SocialPostSheetState extends State<SocialPostSheet> {
   final _formKey = GlobalKey<FormState>();
-  final _author = TextEditingController();
   final _text = TextEditingController();
-  final _memberCode = TextEditingController();
+  String _userName = '';
   String? _photoBase64;
   bool _busy = false;
   bool _picking = false;
@@ -1009,10 +988,17 @@ class _SocialPostSheetState extends State<SocialPostSheet> {
   String? _error;
 
   @override
+  void initState() {
+    super.initState();
+    AuthService.currentUser().then((AuthUser? u) {
+      if (!mounted) return;
+      setState(() => _userName = u?.name ?? '');
+    });
+  }
+
+  @override
   void dispose() {
-    _author.dispose();
     _text.dispose();
-    _memberCode.dispose();
     super.dispose();
   }
 
@@ -1092,12 +1078,27 @@ class _SocialPostSheetState extends State<SocialPostSheet> {
                             fontWeight: FontWeight.w700)),
                   ),
                 const SizedBox(height: 12),
-                TextFormField(
-                  controller: _author,
-                  decoration: const InputDecoration(
-                      labelText: 'نام *', border: OutlineInputBorder()),
-                  validator: (v) =>
-                      (v == null || v.trim().isEmpty) ? 'نام ضروری ہے' : null,
+                Card(
+                  color: const Color(0xFFFFF3E0),
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.person,
+                            color: Color(0xFFC8102E)),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _userName.isEmpty
+                                ? 'پوسٹ بطور: …'
+                                : 'پوسٹ بطور: $_userName',
+                            style: const TextStyle(
+                                fontWeight: FontWeight.w700),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
                 const SizedBox(height: 12),
                 TextFormField(
@@ -1108,17 +1109,6 @@ class _SocialPostSheetState extends State<SocialPostSheet> {
                       border: OutlineInputBorder()),
                   validator: (v) => (v == null || v.trim().isEmpty)
                       ? 'تحریر ضروری ہے'
-                      : null,
-                ),
-                const SizedBox(height: 12),
-                TextFormField(
-                  controller: _memberCode,
-                  obscureText: true,
-                  decoration: const InputDecoration(
-                      labelText: 'ممبر کوڈ *',
-                      border: OutlineInputBorder()),
-                  validator: (v) => (v == null || v.trim().isEmpty)
-                      ? 'ممبر کوڈ ضروری ہے'
                       : null,
                 ),
                 if (_error != null)
@@ -1143,12 +1133,8 @@ class _SocialPostSheetState extends State<SocialPostSheet> {
                             });
                             final result =
                                 await ApiService.createSocialPost(
-                              author: _author.text.trim(),
                               text: _text.text.trim(),
                               photoBase64: _photoBase64,
-                              // Session-only: read from the field and
-                              // never written to any storage.
-                              memberCode: _memberCode.text.trim(),
                               onUploadProgress: (sent, total) {
                                 if (!mounted) return;
                                 setState(() => _uploadPct = total > 0
@@ -1188,41 +1174,42 @@ class _SocialPostSheetState extends State<SocialPostSheet> {
 }
 
 /// Comments sheet for one social post: lists comments (author + time),
-/// sends a text comment gated by the session member code. Returns true
-/// when a comment was added (parent refreshes counts).
+/// sends a text comment. Sending requires login — the sheet opens the
+/// AuthScreen itself when the user is logged out. The author name comes
+/// from the logged-in account (the server sets it). Returns true when
+/// a comment was added (parent refreshes counts).
 class SocialCommentsSheet extends StatefulWidget {
   const SocialCommentsSheet({
     super.key,
     required this.post,
-    required this.memberId,
-    required this.ensureMemberCode,
   });
 
   final SocialPost post;
-  final String memberId;
-  final Future<String?> Function() ensureMemberCode;
 
   @override
   State<SocialCommentsSheet> createState() => _SocialCommentsSheetState();
 }
 
 class _SocialCommentsSheetState extends State<SocialCommentsSheet> {
-  final _author = TextEditingController();
   final _text = TextEditingController();
   List<SocialComment> _comments = [];
   bool _loading = false;
   bool _busy = false;
   String? _error;
+  String _userName = '';
 
   @override
   void initState() {
     super.initState();
     _load();
+    AuthService.currentUser().then((AuthUser? u) {
+      if (!mounted) return;
+      setState(() => _userName = u?.name ?? '');
+    });
   }
 
   @override
   void dispose() {
-    _author.dispose();
     _text.dispose();
     super.dispose();
   }
@@ -1321,12 +1308,14 @@ class _SocialCommentsSheetState extends State<SocialCommentsSheet> {
                 ),
               ),
             const SizedBox(height: 12),
-            TextField(
-              controller: _author,
-              decoration: const InputDecoration(
-                  labelText: 'نام *', border: OutlineInputBorder()),
-            ),
-            const SizedBox(height: 8),
+            if (_userName.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text('کمنٹ بطور: $_userName',
+                    style: const TextStyle(
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFFC8102E))),
+              ),
             TextField(
               controller: _text,
               maxLines: 3,
@@ -1347,14 +1336,25 @@ class _SocialCommentsSheetState extends State<SocialCommentsSheet> {
                 onPressed: _busy
                     ? null
                     : () async {
-                        final author = _author.text.trim();
                         final text = _text.text.trim();
-                        if (author.isEmpty || text.isEmpty) {
-                          setState(() => _error = 'نام اور کمنٹ دونوں ضروری ہیں');
+                        if (text.isEmpty) {
+                          setState(() => _error = 'کمنٹ لکھیں');
                           return;
                         }
-                        final code = await widget.ensureMemberCode();
-                        if (code == null || !mounted) return;
+                        if (!await AuthService.isLoggedIn()) {
+                          if (!mounted) return;
+                          final bool? ok =
+                              await showModalBottomSheet<bool>(
+                            context: context,
+                            isScrollControlled: true,
+                            builder: (_) => const AuthScreen(),
+                          );
+                          if (ok != true || !mounted) return;
+                          final AuthUser? u =
+                              await AuthService.currentUser();
+                          if (!mounted) return;
+                          setState(() => _userName = u?.name ?? '');
+                        }
                         setState(() {
                           _busy = true;
                           _error = null;
@@ -1362,10 +1362,7 @@ class _SocialCommentsSheetState extends State<SocialCommentsSheet> {
                         final result =
                             await ApiService.addSocialComment(
                           postId: widget.post.id,
-                          author: author,
                           text: text,
-                          memberCode: code,
-                          memberId: widget.memberId,
                         );
                         if (!mounted) return;
                         setState(() => _busy = false);
@@ -1387,6 +1384,308 @@ class _SocialCommentsSheetState extends State<SocialCommentsSheet> {
             ),
             const SizedBox(height: 16),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+// ============================ AUTH SCREEN ============================
+
+/// Login / signup sheet (email + password). Replaces the old
+/// MEMBER_CODE dialog system (Jaani, 31 Oct 2026). The session is
+/// saved by AuthService (SharedPreferences, survives restarts); pops
+/// `true` on success so the caller can continue the gated action
+/// (post / like / comment).
+class AuthScreen extends StatefulWidget {
+  const AuthScreen({super.key});
+
+  @override
+  State<AuthScreen> createState() => _AuthScreenState();
+}
+
+class _AuthScreenState extends State<AuthScreen>
+    with SingleTickerProviderStateMixin {
+  late final TabController _tabs;
+  final _loginForm = GlobalKey<FormState>();
+  final _signupForm = GlobalKey<FormState>();
+  final _loginEmail = TextEditingController();
+  final _loginPassword = TextEditingController();
+  final _name = TextEditingController();
+  final _email = TextEditingController();
+  final _password = TextEditingController();
+  final _phone = TextEditingController();
+  final _city = TextEditingController();
+  String _group = bloodGroups.first;
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabs = TabController(length: 2, vsync: this);
+  }
+
+  @override
+  void dispose() {
+    _tabs.dispose();
+    _loginEmail.dispose();
+    _loginPassword.dispose();
+    _name.dispose();
+    _email.dispose();
+    _password.dispose();
+    _phone.dispose();
+    _city.dispose();
+    super.dispose();
+  }
+
+  String? _required(String? v, String msg) =>
+      (v == null || v.trim().isEmpty) ? msg : null;
+
+  String? _emailCheck(String? v) {
+    if (v == null || v.trim().isEmpty) return 'ای میل ضروری ہے';
+    if (!v.contains('@')) return 'درست ای میل لکھیں';
+    return null;
+  }
+
+  Future<void> _doLogin() async {
+    if (!_loginForm.currentState!.validate()) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    final result = await AuthService.login(
+      email: _loginEmail.text.trim(),
+      password: _loginPassword.text,
+    );
+    if (!mounted) return;
+    setState(() => _busy = false);
+    if (result.ok) {
+      if (!context.mounted) return;
+      Navigator.pop(context, true);
+    } else {
+      setState(() => _error = result.error);
+    }
+  }
+
+  Future<void> _doSignup() async {
+    if (!_signupForm.currentState!.validate()) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    final result = await AuthService.register(
+      name: _name.text.trim(),
+      email: _email.text.trim(),
+      password: _password.text,
+      phone: _phone.text.trim(),
+      group: _group,
+      city: _city.text.trim(),
+    );
+    if (!mounted) return;
+    setState(() => _busy = false);
+    if (result.ok) {
+      if (!context.mounted) return;
+      Navigator.pop(context, true);
+    } else {
+      setState(() => _error = result.error);
+    }
+  }
+
+  Widget _submitButton(String label, Future<void> Function() onTap) {
+    return SizedBox(
+      width: double.infinity,
+      child: ElevatedButton(
+        onPressed: _busy ? null : () => onTap(),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: const Color(0xFFC8102E),
+          foregroundColor: Colors.white,
+          padding: const EdgeInsets.symmetric(vertical: 14),
+        ),
+        child: Text(_busy ? 'براہ کرم انتظار کریں…' : label),
+      ),
+    );
+  }
+
+  Widget _errorLine() {
+    if (_error == null) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Text(_error!,
+          style: const TextStyle(
+              color: Colors.red, fontWeight: FontWeight.w700)),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Directionality(
+      textDirection: TextDirection.rtl,
+      child: Padding(
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom,
+          left: 16,
+          right: 16,
+          top: 16,
+        ),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('👤 ممبر لاگ اِن',
+                  style: TextStyle(
+                      fontSize: 20, fontWeight: FontWeight.w900)),
+              const SizedBox(height: 4),
+              const Text(
+                'پوسٹ، لائک اور کمنٹ کے لیے اپنا اکاؤنٹ استعمال کریں۔',
+                style: TextStyle(color: Colors.black54),
+              ),
+              const SizedBox(height: 12),
+              TabBar(
+                controller: _tabs,
+                labelColor: const Color(0xFFC8102E),
+                unselectedLabelColor: Colors.black54,
+                indicatorColor: const Color(0xFFC8102E),
+                tabs: const [
+                  Tab(text: 'لاگ اِن'),
+                  Tab(text: 'نیا اکاؤنٹ'),
+                ],
+              ),
+              const SizedBox(height: 12),
+              SizedBox(
+                height: 430,
+                child: TabBarView(
+                  controller: _tabs,
+                  children: [
+                    // ---------- LOGIN ----------
+                    Form(
+                      key: _loginForm,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          TextFormField(
+                            controller: _loginEmail,
+                            keyboardType: TextInputType.emailAddress,
+                            decoration: const InputDecoration(
+                                labelText: 'ای میل *',
+                                border: OutlineInputBorder()),
+                            validator: _emailCheck,
+                          ),
+                          const SizedBox(height: 12),
+                          TextFormField(
+                            controller: _loginPassword,
+                            obscureText: true,
+                            decoration: const InputDecoration(
+                                labelText: 'پاس ورڈ *',
+                                border: OutlineInputBorder()),
+                            validator: (v) =>
+                                _required(v, 'پاس ورڈ ضروری ہے'),
+                          ),
+                          _errorLine(),
+                          const SizedBox(height: 16),
+                          _submitButton('لاگ اِن', _doLogin),
+                        ],
+                      ),
+                    ),
+                    // ---------- SIGNUP ----------
+                    Form(
+                      key: _signupForm,
+                      child: SingleChildScrollView(
+                        child: Column(
+                          crossAxisAlignment:
+                              CrossAxisAlignment.start,
+                          children: [
+                            TextFormField(
+                              controller: _name,
+                              decoration: const InputDecoration(
+                                  labelText: 'نام *',
+                                  border: OutlineInputBorder()),
+                              validator: (v) =>
+                                  _required(v, 'نام ضروری ہے'),
+                            ),
+                            const SizedBox(height: 12),
+                            TextFormField(
+                              controller: _email,
+                              keyboardType:
+                                  TextInputType.emailAddress,
+                              decoration: const InputDecoration(
+                                  labelText: 'ای میل *',
+                                  border: OutlineInputBorder()),
+                              validator: _emailCheck,
+                            ),
+                            const SizedBox(height: 12),
+                            TextFormField(
+                              controller: _password,
+                              obscureText: true,
+                              decoration: const InputDecoration(
+                                  labelText:
+                                      'پاس ورڈ * (کم از کم 6 حروف)',
+                                  border: OutlineInputBorder()),
+                              validator: (v) {
+                                final req =
+                                    _required(v, 'پاس ورڈ ضروری ہے');
+                                if (req != null) return req;
+                                if (v!.length < 6) {
+                                  return 'پاس ورڈ کم از کم 6 حروف کا ہو';
+                                }
+                                return null;
+                              },
+                            ),
+                            const SizedBox(height: 12),
+                            TextFormField(
+                              controller: _phone,
+                              keyboardType: TextInputType.phone,
+                              decoration: const InputDecoration(
+                                  labelText: 'فون نمبر *',
+                                  border: OutlineInputBorder()),
+                              validator: (v) =>
+                                  _required(v, 'فون نمبر ضروری ہے'),
+                            ),
+                            const SizedBox(height: 12),
+                            DropdownButtonFormField<String>(
+                              initialValue: _group,
+                              decoration: const InputDecoration(
+                                  labelText: 'بلڈ گروپ *',
+                                  border: OutlineInputBorder()),
+                              items: bloodGroups
+                                  .map((String g) =>
+                                      DropdownMenuItem(
+                                        value: g,
+                                        child: Directionality(
+                                          textDirection:
+                                              TextDirection.ltr,
+                                          child: Text(g),
+                                        ),
+                                      ))
+                                  .toList(),
+                              onChanged: (String? v) =>
+                                  setState(() => _group = v!),
+                            ),
+                            const SizedBox(height: 12),
+                            TextFormField(
+                              controller: _city,
+                              decoration: const InputDecoration(
+                                  labelText: 'شہر *',
+                                  border: OutlineInputBorder()),
+                              validator: (v) =>
+                                  _required(v, 'شہر ضروری ہے'),
+                            ),
+                            _errorLine(),
+                            const SizedBox(height: 16),
+                            _submitButton(
+                                'اکاؤنٹ بنائیں', _doSignup),
+                            const SizedBox(height: 8),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+            ],
+          ),
         ),
       ),
     );
@@ -2265,9 +2564,9 @@ class _RegisterTabState extends State<RegisterTab> {
 // ============================ FEED POST SHEET ============================
 
 /// "اپ ڈیٹ پوسٹ کریں" sheet: photo via camera OR gallery, fields
-/// name / area / blood-group dropdown / patient / place / caption,
-/// PLUS a member-code field. The member code lives ONLY in this
-/// widget's state for this one post — it is never stored anywhere.
+/// name / area / blood-group dropdown / patient / place / caption.
+/// Requires login (the parent opens AuthScreen first); the bearer
+/// token goes in the Authorization header.
 /// Returns true when the post succeeded (parent refreshes the feed).
 class FeedPostSheet extends StatefulWidget {
   const FeedPostSheet({super.key});
@@ -2283,7 +2582,6 @@ class _FeedPostSheetState extends State<FeedPostSheet> {
   final _patient = TextEditingController();
   final _place = TextEditingController();
   final _caption = TextEditingController();
-  final _memberCode = TextEditingController();
   String _group = bloodGroups.first;
   String? _photoBase64;
   bool _busy = false;
@@ -2298,7 +2596,6 @@ class _FeedPostSheetState extends State<FeedPostSheet> {
     _patient.dispose();
     _place.dispose();
     _caption.dispose();
-    _memberCode.dispose();
     super.dispose();
   }
 
@@ -2434,17 +2731,6 @@ class _FeedPostSheetState extends State<FeedPostSheet> {
                       ? 'تفصیل ضروری ہے'
                       : null,
                 ),
-                const SizedBox(height: 12),
-                TextFormField(
-                  controller: _memberCode,
-                  obscureText: true,
-                  decoration: const InputDecoration(
-                      labelText: 'ممبر کوڈ *',
-                      border: OutlineInputBorder()),
-                  validator: (v) => (v == null || v.trim().isEmpty)
-                      ? 'ممبر کوڈ ضروری ہے'
-                      : null,
-                ),
                 if (_error != null)
                   Padding(
                     padding: const EdgeInsets.only(top: 8),
@@ -2474,9 +2760,6 @@ class _FeedPostSheetState extends State<FeedPostSheet> {
                               place: _place.text.trim(),
                               caption: _caption.text.trim(),
                               photoBase64: _photoBase64,
-                              // Session-only: read from the field and
-                              // never written to any storage.
-                              memberCode: _memberCode.text.trim(),
                               onUploadProgress: (sent, total) {
                                 if (!mounted) return;
                                 setState(() => _uploadPct = total > 0
@@ -2730,8 +3013,147 @@ class _AdminScreenState extends State<AdminScreen> {
 
 // ============================ INFO TAB ============================
 
-class InfoTab extends StatelessWidget {
+class InfoTab extends StatefulWidget {
   const InfoTab({super.key});
+
+  @override
+  State<InfoTab> createState() => _InfoTabState();
+}
+
+class _InfoTabState extends State<InfoTab> {
+  AuthUser? _user;
+  bool _loadingUser = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadUser();
+  }
+
+  Future<void> _loadUser() async {
+    final AuthUser? u = await AuthService.currentUser();
+    if (!mounted) return;
+    setState(() {
+      _user = u;
+      _loadingUser = false;
+    });
+  }
+
+  Future<void> _openAuth() async {
+    final bool? ok = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => const AuthScreen(),
+    );
+    if (ok == true) _loadUser();
+  }
+
+  Future<void> _logout() async {
+    await AuthService.logout();
+    if (!mounted) return;
+    setState(() {
+      _user = null;
+      _loadingUser = false;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('لاگ آؤٹ ہو گیا')),
+    );
+  }
+
+  /// Login state card: shows the logged-in member (name + group/city)
+  /// with a logout button, or a login/signup button when logged out.
+  Widget _accountCard() {
+    if (_loadingUser) {
+      return const Card(
+        child: Padding(
+          padding: EdgeInsets.all(16),
+          child: Center(child: CircularProgressIndicator()),
+        ),
+      );
+    }
+    final AuthUser? user = _user;
+    if (user == null) {
+      return Card(
+        color: const Color(0xFFFFF3E0),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('👤 میرا اکاؤنٹ',
+                  style: TextStyle(
+                      fontSize: 17, fontWeight: FontWeight.w900)),
+              const SizedBox(height: 4),
+              const Text(
+                'سوشل فیڈ میں پوسٹ، لائک اور کمنٹ کے لیے لاگ اِن کریں۔',
+                style: TextStyle(color: Colors.black54),
+              ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: _openAuth,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFC8102E),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                  child: const Text('لاگ اِن / نیا اکاؤنٹ بنائیں'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    return Card(
+      color: const Color(0xFFE8F5E9),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.account_circle,
+                    color: Color(0xFFC8102E), size: 40),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(user.name,
+                          style: const TextStyle(
+                              fontSize: 17,
+                              fontWeight: FontWeight.w900)),
+                      Text(
+                        '${user.group} • ${user.city}',
+                        style:
+                            const TextStyle(color: Colors.black54),
+                      ),
+                      Text(
+                        user.email,
+                        style: const TextStyle(
+                            color: Colors.black54, fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton(
+                onPressed: _logout,
+                child: const Text('لاگ آؤٹ'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -2741,6 +3163,8 @@ class InfoTab extends StatelessWidget {
         return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        _accountCard(),
+        const SizedBox(height: 8),
         sectionTitle('ہمارے بارے میں'),
         Text(
           config.about,
