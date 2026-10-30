@@ -692,15 +692,14 @@ class _HomeTabState extends State<HomeTab> {
 // If the backend is unavailable, the tab shows an honest error card
 // with a retry button — never a crash, never fake data.
 
+/// Facebook-style post photo: full-bleed, edge to edge, no rounding.
+/// (Jaani, 30 Oct 2026: post format = picture on top, details below, simple.)
 Widget? socialPhotoWidget(String photo) {
   if (photo.isEmpty) return null;
   try {
     final raw = photo.contains(',') ? photo.split(',').last : photo;
     final bytes = base64Decode(raw);
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(10),
-      child: Image.memory(bytes, width: double.infinity, fit: BoxFit.cover),
-    );
+    return Image.memory(bytes, width: double.infinity, fit: BoxFit.cover);
   } catch (_) {
     return null;
   }
@@ -917,29 +916,47 @@ class _SocialFeedTabState extends State<SocialFeedTab> {
           ..._posts.map((post) {
             final photo = socialPhotoWidget(post.photo);
             final busy = _likingId == post.id;
+            /* Facebook-simple post layout (Jaani, 30 Oct 2026):
+               header (author + time) -> full-bleed picture -> details text
+               -> like/comment. No designed overlays or badges. */
             return Card(
               margin: const EdgeInsets.only(bottom: 10),
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (photo != null) ...[
-                      photo,
-                      const SizedBox(height: 8),
-                    ],
-                    if (post.text.isNotEmpty)
-                      Text(post.text,
+              clipBehavior: Clip.antiAlias,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Text(
+                          post.author,
                           style: const TextStyle(
-                              fontWeight: FontWeight.w800, fontSize: 16)),
-                    const SizedBox(height: 6),
-                    Text('👤 ${post.author}'),
-                    if (post.ts.isNotEmpty)
-                      Text(displayDateTime(post.ts),
-                          style: const TextStyle(color: Colors.black54)),
-                    const SizedBox(height: 4),
-                    Row(
-                      children: [
+                              fontWeight: FontWeight.w700, fontSize: 15),
+                        ),
+                        if (post.ts.isNotEmpty)
+                          Text(
+                            displayDateTime(post.ts),
+                            style: const TextStyle(
+                                color: Colors.black54, fontSize: 12),
+                          ),
+                      ],
+                    ),
+                  ),
+                  if (photo != null) photo,
+                  if (post.text.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+                      child: Text(
+                        post.text,
+                        style: const TextStyle(fontSize: 15),
+                      ),
+                    ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    child: Row(
+                      children: <Widget>[
                         TextButton.icon(
                           onPressed: busy ? null : () => _toggleLike(post),
                           icon: Icon(
@@ -960,8 +977,8 @@ class _SocialFeedTabState extends State<SocialFeedTab> {
                         ),
                       ],
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
             );
           }),
