@@ -40,6 +40,7 @@
 // download and photo uploads, live Urdu status text for server waits.
 // No silent screens, no fake timer percentages.
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -51,6 +52,7 @@ import 'data.dart';
 import 'services/ad_service.dart';
 import 'services/api_service.dart';
 import 'services/config_service.dart';
+import 'services/unity_ads_service.dart';
 import 'services/update_service.dart';
 
 // ---- Society's public contact (published on the website itself) ----
@@ -88,6 +90,10 @@ Future<void> whatsappCentral([String? message]) =>
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await AdService.init();
+  // Unity Ads (revenue): best-effort, never blocks startup.
+  // Rewarded = voluntary "support the society" in the Info tab;
+  // Interstitial = frequency-capped on non-critical tab switches.
+  unawaited(UnityAdsService.init());
   await ConfigService.loadFromCache();
   runApp(const DonerApp());
   // Launch fetch: refreshes content in the background. On any failure
@@ -140,6 +146,22 @@ class _HomeShellState extends State<HomeShell> {
 
   // Tabs are built dynamically in build() so features.directory=false
   // hides the Directory tab instead of leaving a dead section.
+
+  /// Bottom-nav tab tap with a frequency-capped Unity interstitial.
+  /// Directory (donor search) and Register (donor registration) are
+  /// critical flows — never interrupted by an ad. Navigation always
+  /// completes, immediately when no ad qualifies.
+  void _onTabTap(int i, List<Widget> tabs) {
+    final target = i < tabs.length ? tabs[i] : null;
+    final critical =
+        target is DirectoryTab || target is RegisterTab;
+    UnityAdsService.maybeShowInterstitial(
+      targetIsCritical: critical,
+      onDone: () {
+        if (mounted) setState(() => _tab = i);
+      },
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -207,7 +229,7 @@ class _HomeShellState extends State<HomeShell> {
         currentIndex: index,
         type: BottomNavigationBarType.fixed,
         selectedItemColor: const Color(0xFFC8102E),
-        onTap: (i) => setState(() => _tab = i),
+        onTap: (i) => _onTabTap(i, tabs),
         items: items,
       ),
         );
@@ -2776,6 +2798,10 @@ class InfoTab extends StatelessWidget {
         sectionTitle('عام سوالات'),
         ...config.faq.map((f) => _infoCard('؟', f.q, f.a)),
         const SizedBox(height: 20),
+        // Voluntary Unity rewarded ad: "support the society". Purely
+        // opt-in, never gates a feature, never blocks a critical flow.
+        const UnitySupportCard(),
+        const SizedBox(height: 20),
         Card(
           color: const Color(0xFF171D26),
           child: Padding(
@@ -2882,6 +2908,93 @@ class InfoTab extends StatelessWidget {
             Text(bio,
                 textAlign: TextAlign.center,
                 style: const TextStyle(color: Colors.black54)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Voluntary Unity rewarded ad card: "watch an ad to support the
+/// society". Purely opt-in — never gates a feature, never blocks a
+/// critical flow. Tapping plays a rewarded video; completing it shows
+/// a thank-you (the revenue goes to the society's Unity account).
+class UnitySupportCard extends StatefulWidget {
+  const UnitySupportCard({super.key});
+
+  @override
+  State<UnitySupportCard> createState() => _UnitySupportCardState();
+}
+
+class _UnitySupportCardState extends State<UnitySupportCard> {
+  bool _busy = false;
+
+  Future<void> _watchAd() async {
+    if (_busy) return;
+    if (!UnityAdsService.isInitialized) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('اشتہار ابھی تیار نہیں — تھوڑی دیر بعد کوشش کریں')),
+      );
+      return;
+    }
+    setState(() => _busy = true);
+    final result = await UnityAdsService.showRewardedAd();
+    if (!mounted) return;
+    setState(() => _busy = false);
+    final msg = switch (result) {
+      UnityAdResult.completed =>
+        'جزاک اللہ! آپ کے تعاون کا شکریہ 🩸',
+      UnityAdResult.skipped =>
+        'اشتہار ادھورا رہ گیا — مکمل دیکھنے پر تعاون شمار ہوگا',
+      UnityAdResult.failed =>
+        'اشتہار نہیں چل سکا — دوبارہ کوشش کریں',
+    };
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      color: const Color(0xFFFFF8E7),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            const Text(
+              '📺 سوسائٹی کی مدد کریں',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'ایک مختصر اشتہار دیکھیں — اس سے حاصل ہونے والی آمدنی '
+              'امن بلڈ ڈونر سوسائٹی کے کام میں استعمال ہوگی۔ '
+              'یہ مکمل طور پر اختیاری ہے۔',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.black54),
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: _busy ? null : _watchAd,
+                icon: _busy
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.white),
+                      )
+                    : const Icon(Icons.play_circle_outline),
+                label: Text(_busy ? 'اشتہار چل رہا ہے…' : 'اشتہار دیکھیں'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFC8102E),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                ),
+              ),
+            ),
           ],
         ),
       ),
