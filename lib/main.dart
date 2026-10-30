@@ -914,8 +914,8 @@ class _SocialFeedTabState extends State<SocialFeedTab> {
           )
         else
           ..._posts.map((post) {
-            final photo = socialPhotoWidget(post.photo);
-            final busy = _likingId == post.id;
+            final Widget? photo = socialPhotoWidget(post.photo);
+            final bool busy = _likingId == post.id;
             /* Facebook-simple post layout (Jaani, 30 Oct 2026):
                header (author + time) -> full-bleed picture -> details text
                -> like/comment. No designed overlays or badges. */
@@ -944,7 +944,7 @@ class _SocialFeedTabState extends State<SocialFeedTab> {
                       ],
                     ),
                   ),
-                  if (photo != null) photo,
+                  if (photo is Widget) photo,
                   if (post.text.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
