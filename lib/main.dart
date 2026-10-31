@@ -365,6 +365,102 @@ List<Widget> withNativeAds(List<Widget> items) {
 
 // ============================ HOME TAB ============================
 
+// ===================== SOS URGENT BLOOD REQUEST =====================
+/// Urgent blood request created ON THE DEVICE (offline-first, no server):
+/// the user fills a short form, Doner builds a shareable Urdu request
+/// card (WhatsApp / copy), and the request stays listed as ACTIVE for
+/// exactly 72 hours, then auto-expires. Storage is SharedPreferences —
+/// nothing leaves the phone except what the user shares themselves.
+class SosRequest {
+  /// How long a request stays ACTIVE after creation.
+  static const Duration lifetime = Duration(hours: 72);
+
+  final String id;
+  final String group;
+  final String hospital;
+  final String city;
+  final int units;
+  final String name;
+  final String phone;
+  final int createdAtMs;
+
+  const SosRequest({
+    required this.id,
+    required this.group,
+    required this.hospital,
+    required this.city,
+    required this.units,
+    required this.name,
+    required this.phone,
+    required this.createdAtMs,
+  });
+
+  bool get isActive =>
+      DateTime.now().millisecondsSinceEpoch - createdAtMs <
+      lifetime.inMilliseconds;
+
+  Duration get remaining {
+    final int left = createdAtMs +
+        lifetime.inMilliseconds -
+        DateTime.now().millisecondsSinceEpoch;
+    return Duration(milliseconds: left < 0 ? 0 : left);
+  }
+
+  String get remainingText {
+    if (!isActive) return 'ختم شدہ';
+    final Duration r = remaining;
+    final int h = r.inHours;
+    final int m = r.inMinutes % 60;
+    return h > 0 ? '$h گھنٹے $m منٹ باقی' : '$m منٹ باقی';
+  }
+
+  /// A fresh copy of this request with a new 72-hour window.
+  SosRequest renewed() => SosRequest(
+        id: id,
+        group: group,
+        hospital: hospital,
+        city: city,
+        units: units,
+        name: name,
+        phone: phone,
+        createdAtMs: DateTime.now().millisecondsSinceEpoch,
+      );
+
+  /// Shareable Urdu request card — the user sends this themselves.
+  String get shareText =>
+      '🚨 *فوری خون کی ضرورت ہے* 🚨\n'
+      '🩸 بلڈ گروپ: $group\n'
+      '🏥 اسپتال: $hospital\n'
+      '📍 شہر: $city\n'
+      '🧧 یونٹس: $units\n'
+      '👤 رابطہ: $name\n'
+      '📞 $phone\n'
+      '⏰ یہ درخواست 72 گھنٹے تک فعال رہتی ہے۔\n'
+      '📲 ڈونر ایپ کے ذریعے بھیجی گئی — Aman Blood Donor Society of Pakistan';
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'id': id,
+        'group': group,
+        'hospital': hospital,
+        'city': city,
+        'units': units,
+        'name': name,
+        'phone': phone,
+        'createdAtMs': createdAtMs,
+      };
+
+  factory SosRequest.fromJson(Map<String, dynamic> j) => SosRequest(
+        id: (j['id'] ?? '') as String,
+        group: (j['group'] ?? '') as String,
+        hospital: (j['hospital'] ?? '') as String,
+        city: (j['city'] ?? '') as String,
+        units: (j['units'] ?? 1) as int,
+        name: (j['name'] ?? '') as String,
+        phone: (j['phone'] ?? '') as String,
+        createdAtMs: (j['createdAtMs'] ?? 0) as int,
+      );
+}
+
 class HomeTab extends StatefulWidget {
   const HomeTab({super.key});
 
@@ -378,10 +474,224 @@ class _HomeTabState extends State<HomeTab> {
   bool _feedLoading = false;
   String? _feedError;
 
+  /// SOS urgent requests, stored on-device in SharedPreferences.
+  List<SosRequest> _sos = [];
+  bool _sosLoaded = false;
+
   @override
   void initState() {
     super.initState();
     _loadFeed();
+    _loadSos();
+  }
+
+  Future<void> _loadSos() async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    final List<String> raw =
+        prefs.getStringList('abd_sos_requests') ?? const <String>[];
+    final List<SosRequest> parsed = <SosRequest>[];
+    for (final String s in raw) {
+      try {
+        parsed.add(SosRequest.fromJson(jsonDecode(s) as Map<String, dynamic>));
+      } catch (_) {
+        // Ignore corrupt entries; keep the rest.
+      }
+    }
+    if (!mounted) return;
+    setState(() {
+      _sos = parsed;
+      _sosLoaded = true;
+    });
+  }
+
+  Future<void> _saveSos() async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList('abd_sos_requests',
+        _sos.map((SosRequest r) => jsonEncode(r.toJson())).toList());
+  }
+
+  Future<void> _openSosSheet() async {
+    final SosRequest? created = await showModalBottomSheet<SosRequest>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => const SosRequestSheet(),
+    );
+    if (created != null) {
+      setState(() => _sos = <SosRequest>[..._sos, created]);
+      await _saveSos();
+    }
+  }
+
+  Future<void> _shareSos(SosRequest r) async {
+    final Uri uri = Uri.parse(
+        'https://wa.me/?text=${Uri.encodeComponent(r.shareText)}');
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+
+  Future<void> _copySos(SosRequest r) async {
+    await Clipboard.setData(ClipboardData(text: r.shareText));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('درخواست کارڈ کاپی ہو گیا۔')),
+    );
+  }
+
+  Future<void> _renewSos(SosRequest r) async {
+    setState(() {
+      _sos = _sos
+          .map((SosRequest x) => x.id == r.id ? x.renewed() : x)
+          .toList();
+    });
+    await _saveSos();
+  }
+
+  Future<void> _deleteSos(SosRequest r) async {
+    setState(() => _sos = _sos.where((SosRequest x) => x.id != r.id).toList());
+    await _saveSos();
+  }
+
+  /// The SOS section: one button to create, then the request cards.
+  Widget _sosSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        sectionTitle('🚨 فوری خون کی درخواست (SOS)'),
+        const Text(
+          'ایمرجنسی میں فوری خون چاہیے؟ مختصر فارم بھریں — تیار کارڈ WhatsApp پر شیئر کریں۔ ہر درخواست 72 گھنٹے تک فعال رہتی ہے، پھر خود بخود ختم ہو جاتی ہے۔',
+          style: TextStyle(color: Colors.black54),
+        ),
+        const SizedBox(height: 8),
+        SizedBox(
+          width: double.infinity,
+          child: ElevatedButton.icon(
+            onPressed: _openSosSheet,
+            icon: const Icon(Icons.emergency),
+            label: const Text('نئی درخواست بنائیں'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFC8102E),
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(vertical: 12),
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        _sosBody(),
+      ],
+    );
+  }
+
+  Widget _sosBody() {
+    if (!_sosLoaded) return const SizedBox.shrink();
+    if (_sos.isEmpty) {
+      return const Card(
+        child: Padding(
+          padding: EdgeInsets.all(12),
+          child: Text(
+            'ابھی کوئی درخواست نہیں ہے۔',
+            style: TextStyle(color: Colors.black54),
+          ),
+        ),
+      );
+    }
+    final List<SosRequest> sorted = List<SosRequest>.from(_sos)
+      ..sort((SosRequest a, SosRequest b) =>
+          b.createdAtMs.compareTo(a.createdAtMs));
+    return Column(
+      children: sorted.map(_sosCard).toList(),
+    );
+  }
+
+  Widget _sosCard(SosRequest r) {
+    final bool active = r.isActive;
+    return Card(
+      color: active ? const Color(0xFFFFF0F0) : null,
+      margin: const EdgeInsets.only(bottom: 8),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: active ? const Color(0xFFC8102E) : Colors.black45,
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Directionality(
+                    textDirection: TextDirection.ltr,
+                    child: Text(
+                      r.group,
+                      style: const TextStyle(
+                          color: Colors.white, fontWeight: FontWeight.w900),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '${r.hospital} — ${r.city}',
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                ),
+                Chip(
+                  label: Text(
+                    active ? 'فعال' : 'ختم شدہ',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                  backgroundColor: active
+                      ? const Color(0xFFE8F5E9)
+                      : const Color(0xFFF0F0F0),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text('🧧 ${r.units} یونٹس • 👤 ${r.name} • 📞 ${r.phone}'),
+            const SizedBox(height: 2),
+            Text(
+              active
+                  ? '⏳ ${r.remainingText}'
+                  : '⏳ مدت ختم — دوبارہ فعال کر کے دوبارہ شیئر کریں۔',
+              style: const TextStyle(color: Colors.black54, fontSize: 13),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                ElevatedButton.icon(
+                  onPressed: () => _shareSos(r),
+                  icon: const Icon(Icons.chat, size: 18),
+                  label: const Text('WhatsApp پر شیئر کریں'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF25D366),
+                    foregroundColor: Colors.white,
+                  ),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () => _copySos(r),
+                  icon: const Icon(Icons.copy, size: 18),
+                  label: const Text('کاپی کریں'),
+                ),
+                if (!active)
+                  OutlinedButton.icon(
+                    onPressed: () => _renewSos(r),
+                    icon: const Icon(Icons.refresh, size: 18),
+                    label: const Text('دوبارہ فعال کریں'),
+                  ),
+                IconButton(
+                  icon: const Icon(Icons.delete_outline),
+                  tooltip: 'حذف کریں',
+                  onPressed: () => _deleteSos(r),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _loadFeed() async {
@@ -513,6 +823,8 @@ class _HomeTabState extends State<HomeTab> {
             ),
           ),
         ),
+        const SizedBox(height: 16),
+        _sosSection(),
         if (config.compatibility) ...[
           sectionTitle('🩸 مریض کا بلڈ گروپ — کون عطیہ دے سکتا ہے؟'),
         const Text(
@@ -684,6 +996,173 @@ class _HomeTabState extends State<HomeTab> {
           ),
         );
       }).toList(),
+    );
+  }
+}
+
+
+// ============================ SOS REQUEST SHEET ============================
+
+/// Bottom-sheet composer for an urgent blood request. Returns the created
+/// SosRequest (not yet saved — the caller stores it) or null on cancel.
+class SosRequestSheet extends StatefulWidget {
+  const SosRequestSheet({super.key});
+
+  @override
+  State<SosRequestSheet> createState() => _SosRequestSheetState();
+}
+
+class _SosRequestSheetState extends State<SosRequestSheet> {
+  final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
+  final TextEditingController _hospital = TextEditingController();
+  final TextEditingController _city = TextEditingController();
+  final TextEditingController _name = TextEditingController();
+  final TextEditingController _phone = TextEditingController();
+  String _group = bloodGroups.first;
+  int _units = 1;
+
+  @override
+  void dispose() {
+    _hospital.dispose();
+    _city.dispose();
+    _name.dispose();
+    _phone.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+    final int now = DateTime.now().millisecondsSinceEpoch;
+    final SosRequest r = SosRequest(
+      id: now.toString(),
+      group: _group,
+      hospital: _hospital.text.trim(),
+      city: _city.text.trim(),
+      units: _units,
+      name: _name.text.trim(),
+      phone: _phone.text.trim(),
+      createdAtMs: now,
+    );
+    Navigator.pop(context, r);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: SingleChildScrollView(
+        padding: EdgeInsets.only(
+          left: 16,
+          right: 16,
+          top: 16,
+          bottom: MediaQuery.of(context).viewInsets.bottom + 16,
+        ),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                '🚨 نئی فوری درخواست',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                'درخواست آپ کے فون میں محفوظ رہے گی اور 72 گھنٹے بعد خود ختم ہو جائے گی۔',
+                style: TextStyle(color: Colors.black54),
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                initialValue: _group,
+                decoration: const InputDecoration(
+                    labelText: 'بلڈ گروپ *', border: OutlineInputBorder()),
+                items: bloodGroups
+                    .map((String g) => DropdownMenuItem<String>(
+                          value: g,
+                          child: Directionality(
+                            textDirection: TextDirection.ltr,
+                            child: Text(g),
+                          ),
+                        ))
+                    .toList(),
+                onChanged: (String? v) {
+                  if (v != null) setState(() => _group = v);
+                },
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _hospital,
+                decoration: const InputDecoration(
+                    labelText: 'اسپتال *', border: OutlineInputBorder()),
+                validator: (String? v) => (v == null || v.trim().isEmpty)
+                    ? 'اسپتال کا نام ضروری ہے'
+                    : null,
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _city,
+                decoration: const InputDecoration(
+                    labelText: 'شہر *', border: OutlineInputBorder()),
+                validator: (String? v) => (v == null || v.trim().isEmpty)
+                    ? 'شہر ضروری ہے'
+                    : null,
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<int>(
+                initialValue: _units,
+                decoration: const InputDecoration(
+                    labelText: 'یونٹس', border: OutlineInputBorder()),
+                items: List<int>.generate(10, (int i) => i + 1)
+                    .map((int n) => DropdownMenuItem<int>(
+                          value: n,
+                          child: Text('$n'),
+                        ))
+                    .toList(),
+                onChanged: (int? v) {
+                  if (v != null) setState(() => _units = v);
+                },
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _name,
+                decoration: const InputDecoration(
+                    labelText: 'رابطہ کا نام *', border: OutlineInputBorder()),
+                validator: (String? v) => (v == null || v.trim().isEmpty)
+                    ? 'نام ضروری ہے'
+                    : null,
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _phone,
+                keyboardType: TextInputType.phone,
+                decoration: const InputDecoration(
+                    labelText: 'فون نمبر * (مثلاً 03xx-xxxxxxx)',
+                    border: OutlineInputBorder()),
+                validator: (String? v) {
+                  final String digits =
+                      (v ?? '').replaceAll(RegExp(r'[^0-9]'), '');
+                  if (digits.length < 10) return 'درست فون نمبر لکھیں';
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: _submit,
+                  icon: const Icon(Icons.save),
+                  label: const Text('درخواست محفوظ کریں'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFC8102E),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -1708,6 +2187,10 @@ class _DirectoryTabState extends State<DirectoryTab> {
   String? _area;
   String _query = '';
 
+  /// Blood-group filter for the donor list. Emergencies are about the
+  /// RIGHT group, not the whole list — null means "all groups".
+  String? _groupFilter;
+
   // Live public donors, cached per area selection (in-memory only).
   // The cache holds FILTERED rows (name + group + address only);
   // phones never enter this state — the public endpoint has none.
@@ -2005,9 +2488,24 @@ class _DirectoryTabState extends State<DirectoryTab> {
     if (_liveCache.containsKey(key)) {
       final donors = _liveCache[key]!;
       if (donors.isEmpty) return _donorEmptyState();
+      final List<PublicDonor> shown = _groupFilter == null
+          ? donors
+          : donors.where((d) => d.group == _groupFilter).toList();
       return Column(
         children: [
-          ...withNativeAds(donors.map((d) => Card(
+          _groupFilterRow(donors),
+          if (shown.isEmpty)
+            const Card(
+              child: Padding(
+                padding: EdgeInsets.all(16),
+                child: Text(
+                  'اس گروپ کا کوئی ڈونر اس علاقے میں نہیں ملا۔ فلٹر تبدیل کریں یا مرکزی نمبر پر رابطہ کریں۔',
+                  style: TextStyle(color: Colors.black54),
+                ),
+              ),
+            )
+          else
+            ...withNativeAds(shown.map((d) => Card(
                 child: Padding(
                   padding: const EdgeInsets.all(12),
                   child: Row(
@@ -2151,6 +2649,45 @@ class _DirectoryTabState extends State<DirectoryTab> {
           ],
         ),
       ),
+    );
+  }
+
+  /// Blood-group filter chips for the donor list (directory donors
+  /// level). Chips appear only when the loaded list spans more than one
+  /// group; tapping filters the visible donor cards client-side.
+  Widget _groupFilterRow(List<PublicDonor> donors) {
+    final Set<String> present = <String>{for (final d in donors) d.group};
+    final List<String> order = <String>[
+      for (final g in bloodGroups)
+        if (present.contains(g)) g
+    ];
+    if (order.length <= 1) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            ChoiceChip(
+              label: const Text('سب گروپس'),
+              selected: _groupFilter == null,
+              onSelected: (_) => setState(() => _groupFilter = null),
+            ),
+            for (final g in order)
+              ChoiceChip(
+                label: Directionality(
+                  textDirection: TextDirection.ltr,
+                  child: Text(g),
+                ),
+                selected: _groupFilter == g,
+                onSelected: (_) => setState(
+                    () => _groupFilter = _groupFilter == g ? null : g),
+              ),
+          ],
+        ),
+        const SizedBox(height: 8),
+      ],
     );
   }
 }
