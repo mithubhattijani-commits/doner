@@ -1,0 +1,96 @@
+# CircleCI — free APK builds for doner (GitHub Actions minutes exhausted).
+# Mirrors .github/workflows/build-apk.yml. DEBUG, uncompressed, universal APK.
+# Triggers on push to main.
+# Required CircleCI project env vars: KEYSTORE_BASE64, KEYSTORE_STORE_PASSWORD,
+# KEYSTORE_KEY_PASSWORD, GH_TOKEN.
+version: 2.1
+
+jobs:
+  build-apk:
+    docker:
+      - image: cirrusci/flutter:stable
+    working_directory: ~/repo
+    steps:
+      - checkout
+      - run:
+          name: Restore Gradle wrapper jar (missing from repo)
+          command: |
+            curl -fsSL -o android/gradle/wrapper/gradle-wrapper.jar https://raw.githubusercontent.com/gradle/gradle/v9.3.1/gradle/wrapper/gradle-wrapper.jar
+            ls -lh android/gradle/wrapper/
+      - run:
+          name: Prepare Android local properties
+          command: |
+            FLUTTER_BIN="$(command -v flutter)"
+            FLUTTER_ROOT="$(dirname "$(dirname "$FLUTTER_BIN")")"
+            printf 'flutter.sdk=%s\n' "$FLUTTER_ROOT" > android/local.properties
+      - run:
+          name: Flutter pub get
+          command: flutter pub get
+      - run:
+          name: Analyze
+          command: flutter analyze
+      - run:
+          name: Decode signing keystore
+          command: |
+            echo "$KEYSTORE_BASE64" | base64 -d > android/app/doner.keystore
+            ls -lh android/app/doner.keystore
+      - run:
+          name: Build debug APK (keystore-signed, uncompressed)
+          command: flutter build apk --debug
+          no_output_timeout: 30m
+      - run:
+          name: Verify APK
+          environment:
+            EXPECTED_SIGNER_SHA256: "f2c17e575f76683c67d316d1de8f140c6521afdacc1c17d64120f78a20aa839e"
+          command: |
+            set -e
+            APK=build/app/outputs/flutter-apk/app-debug.apk
+            ls -la "$APK"
+            md5sum "$APK"
+            unzip -t "$APK" | tail -3
+            SDK="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+            AAPT2=$(ls "$SDK"/build-tools/*/aapt2 | head -1)
+            APKSIGNER=$(ls "$SDK"/build-tools/*/apksigner | head -1)
+            "$AAPT2" dump badging "$APK" > badging.txt
+            cat badging.txt
+            grep -F "package: name='com.doner.app' versionCode='1' versionName='1.0.0'" badging.txt
+            grep -F "sdkVersion:'24'" badging.txt
+            grep -F "targetSdkVersion:'36'" badging.txt
+            grep -F "application-label:'Doner'" badging.txt
+            "$APKSIGNER" verify --print-certs "$APK" | tee certs.txt
+            grep -F "Signer #1 certificate SHA-256 digest: $EXPECTED_SIGNER_SHA256" certs.txt
+            echo "VERIFY OK: package/version/label/SDKs/signer all match Doner day-1 key"
+            if unzip -l "$APK" | grep -q "assets/flutter_assets/kernel_blob.bin"; then
+              CODE_BLOB="assets/flutter_assets/kernel_blob.bin"
+            else
+              CODE_BLOB="lib/arm64-v8a/libapp.so"
+            fi
+            echo "Code blob: $CODE_BLOB"
+            unzip -p "$APK" "$CODE_BLOB" | strings | grep -F "nigraantv.xyz/apps/doner-version.json"
+            if unzip -p "$APK" "$CODE_BLOB" | strings | grep -F "com.amanblood"; then
+              echo "FAIL: com.amanblood reference in binary"; exit 1
+            fi
+      - run:
+          name: Install GitHub CLI
+          command: |
+            if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | $SUDO dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+            $SUDO chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | $SUDO tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+            $SUDO apt-get update -qq
+            $SUDO apt-get install -y -qq gh
+      - run:
+          name: Upload APK to GitHub Release
+          command: |
+            gh release create latest --title "Latest Build" --notes "Automated CircleCI build from $CIRCLE_SHA1" --repo mithubhattijani-commits/doner 2>/dev/null || true
+            gh release upload latest build/app/outputs/flutter-apk/app-debug.apk --clobber --repo mithubhattijani-commits/doner
+      - store_artifacts:
+          path: build/app/outputs/flutter-apk/app-debug.apk
+
+workflows:
+  build-on-main:
+    jobs:
+      - build-apk:
+          filters:
+            branches:
+              only: main
