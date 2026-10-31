@@ -3780,6 +3780,18 @@ class _InfoTabState extends State<InfoTab> {
         // opt-in, never gates a feature, never blocks a critical flow.
         const UnitySupportCard(),
         const SizedBox(height: 20),
+        // Help & Support: WhatsApp contact (Jaani Bhatti).
+        Card(
+          child: ListTile(
+            leading: const Icon(Icons.support_agent),
+            title: const Text('مدد اور سپورٹ'),
+            subtitle: const Text('Jaani Bhatti — 03090808180'),
+            trailing: const Icon(Icons.chat),
+            onTap: () => whatsappNumber('923090808180',
+                'السلام علیکم! مجھے مدد چاہیے۔'),
+          ),
+        ),
+        const SizedBox(height: 20),
         Card(
           color: const Color(0xFF171D26),
           child: Padding(
