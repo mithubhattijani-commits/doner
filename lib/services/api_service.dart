@@ -8,7 +8,7 @@
 ///   POST /api/donors        name/phone/province/district/area/address/group
 ///                          (immediately public, phone never shown publicly).
 ///   GET  /api/feed          public, newest first.
-///   POST /api/feed          Authorization: Bearer <token>.
+///   POST /api/feed          Authorization: Bearer `<token>`.
 ///   GET  /api/admin/donors  header X-Admin-Key; the ONLY endpoint that
 ///                          returns phone numbers, shown only in the admin view.
 ///   Auth + social feed live in AuthService (services/auth_service.dart):

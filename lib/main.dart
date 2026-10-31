@@ -723,6 +723,7 @@ class _HomeTabState extends State<HomeTab> {
       );
       if (ok != true || !mounted) return;
     }
+    if (!mounted) return;
     final posted = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
@@ -1822,7 +1823,7 @@ class _SocialCommentsSheetState extends State<SocialCommentsSheet> {
                           return;
                         }
                         if (!await AuthService.isLoggedIn()) {
-                          if (!mounted) return;
+                          if (!context.mounted) return;
                           final bool? ok =
                               await showModalBottomSheet<bool>(
                             context: context,

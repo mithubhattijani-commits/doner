@@ -5,8 +5,8 @@
 /// https://aman-blood-donor-society.mithubhattijani.workers.dev
 ///   POST /api/auth/register {name,email,password,phone,group,city}
 ///   POST /api/auth/login    {email,password}
-///   POST /api/auth/logout   (Authorization: Bearer <token>)
-///   GET  /api/auth/me       (Authorization: Bearer <token>)
+///   POST /api/auth/logout   (Authorization: Bearer `<token>`)
+///   GET  /api/auth/me       (Authorization: Bearer `<token>`)
 ///
 /// The token + user profile persist in SharedPreferences
 /// (doner_auth_token / doner_auth_user) so the session survives app
