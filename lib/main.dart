@@ -55,6 +55,7 @@ import 'services/auth_service.dart';
 import 'services/config_service.dart';
 import 'services/unity_ads_service.dart';
 import 'services/update_service.dart';
+import 'package:flutter/services.dart';
 
 // ---- Society's public contact (published on the website itself) ----
 const String centralDisplay = '0300 4927940';
