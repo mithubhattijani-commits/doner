@@ -4019,10 +4019,10 @@ class _InfoTabState extends State<InfoTab> {
       statusText = 'آپ اب عطیے کے اہل ہیں — جزاک اللہ! 🎉';
       statusColor = const Color(0xFF2E7D32);
     }
-    final String dateFmt = (int ms) {
+    String dateFmt(int ms) {
       final DateTime d = DateTime.fromMillisecondsSinceEpoch(ms);
       return '${d.day}/${d.month}/${d.year}';
-    };
+    }
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
