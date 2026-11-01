@@ -3562,11 +3562,14 @@ class InfoTab extends StatefulWidget {
 class _InfoTabState extends State<InfoTab> {
   AuthUser? _user;
   bool _loadingUser = true;
+  List<int> _donations = <int>[];
+  bool _loadingDonations = true;
 
   @override
   void initState() {
     super.initState();
     _loadUser();
+    _loadDonations();
   }
 
   Future<void> _loadUser() async {
@@ -3704,6 +3707,9 @@ class _InfoTabState extends State<InfoTab> {
       children: [
         _accountCard(),
         const SizedBox(height: 8),
+        sectionTitle('🩸 میرا عطیہ ریکارڈ'),
+        _donationTrackerCard(),
+        const SizedBox(height: 8),
         sectionTitle('ہمارے بارے میں'),
         Text(
           config.about,
@@ -3717,6 +3723,35 @@ class _InfoTabState extends State<InfoTab> {
         ...config.donationProcess.asMap().entries.map((e) => _infoCard(
               '${e.key + 1}', e.value.step, e.value.text)),
         _infoCard('✅', 'کون عطیہ دے سکتا ہے؟', config.eligibility),
+        const SizedBox(height: 8),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'اپنی اہلیت خود جانچیں — چند سوالات، 2 منٹ۔',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                          builder: (_) => const EligibilityScreen()),
+                    );
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF2E7D32),
+                    foregroundColor: Colors.white,
+                  ),
+                  child: const Text('اہلیت جانچیں'),
+                ),
+              ],
+            ),
+          ),
+        ),
         _infoCard('⏸️', 'کب عطیہ مؤخر کریں؟', config.deferWhen),
         if (config.compatibility) ...[
           sectionTitle('بلڈ گروپس — کون کس کو خون دے سکتا ہے؟'),
@@ -3839,6 +3874,226 @@ class _InfoTabState extends State<InfoTab> {
     );
   }
 
+  // ================== Donation tracker (offline-first) ==================
+  Future<void> _loadDonations() async {
+    final List<int> list = await DonationLog.load();
+    if (!mounted) return;
+    setState(() {
+      _donations = list;
+      _loadingDonations = false;
+    });
+  }
+
+  /// Whole blood: donors should wait ~90 days between donations (per
+  /// Pakistan blood-bank guidance). Countdown to the next eligible date.
+  DateTime? get _lastDonationDate {
+    if (_donations.isEmpty) return null;
+    return DateTime.fromMillisecondsSinceEpoch(_donations.last);
+  }
+
+  DateTime? get _nextEligibleDate {
+    final DateTime? last = _lastDonationDate;
+    if (last == null) return null;
+    return last.add(const Duration(days: 90));
+  }
+
+  String _milestoneEmoji(int n) {
+    if (n >= 100) return '👑';
+    if (n >= 50) return '🏆';
+    if (n >= 25) return '🥇';
+    if (n >= 10) return '🥈';
+    if (n >= 5) return '🥉';
+    if (n >= 1) return '🩸';
+    return '🌱';
+  }
+
+  String _milestoneLabel(int n) {
+    if (n >= 100) return 'سو عطیات — زندہ لیجنڈ';
+    if (n >= 50) return 'پچاس عطیات — چیمپئن';
+    if (n >= 25) return 'پچیس عطیات — سونے کا تمغہ';
+    if (n >= 10) return 'دس عطیات — چاندی کا تمغہ';
+    if (n >= 5) return 'پانچ عطیات — کانسی کا تمغہ';
+    if (n >= 1) return 'پہلا عطیہ — ہیرو';
+    return 'ابھی آغاز نہیں ہوا';
+  }
+
+  Future<void> _logDonation() async {
+    final DateTime now = DateTime.now();
+    final DateTime today = DateTime(now.year, now.month, now.day);
+    final bool already = _donations.any((int ms) {
+      final DateTime d = DateTime.fromMillisecondsSinceEpoch(ms);
+      return d.year == today.year && d.month == today.month && d.day == today.day;
+    });
+    if (already) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('آج کا عطیہ پہلے سے درج ہے ✅')),
+      );
+      return;
+    }
+    final bool? ok = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext ctx) {
+        return AlertDialog(
+          title: const Text('عطیہ ریکارڈ کریں'),
+          content: const Text(
+              'کیا آپ نے واقعی آج خون کا عطیہ دیا؟ یہ ریکارڈ صرف اسی فون میں رہے گا۔'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('نہیں'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('ہاں، درج کریں'),
+            ),
+          ],
+        );
+      },
+    );
+    if (ok != true) return;
+    final List<int> list = List<int>.from(_donations)
+      ..add(today.millisecondsSinceEpoch)
+      ..sort();
+    await DonationLog.save(list);
+    if (!mounted) return;
+    setState(() => _donations = list);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('جزاک اللہ! عطیہ ریکارڈ ہو گیا 🩸')),
+    );
+  }
+
+  Future<void> _deleteDonation(int ms) async {
+    final bool? ok = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext ctx) {
+        return AlertDialog(
+          title: const Text('ریکارڈ حذف کریں؟'),
+          content: const Text('یہ عطیہ آپ کے ریکارڈ سے ہٹا دیا جائے گا۔'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('رہنے دیں'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+              child: const Text('حذف کریں'),
+            ),
+          ],
+        );
+      },
+    );
+    if (ok != true) return;
+    final List<int> list = List<int>.from(_donations)..remove(ms);
+    await DonationLog.save(list);
+    if (!mounted) return;
+    setState(() => _donations = list);
+  }
+
+  /// Personal donation tracker card: total count + milestone badge,
+  /// days until next eligible donation, and the history list. All
+  /// data lives in SharedPreferences on this phone only.
+  Widget _donationTrackerCard() {
+    if (_loadingDonations) {
+      return const Card(
+        child: Padding(
+          padding: EdgeInsets.all(16),
+          child: Center(child: CircularProgressIndicator()),
+        ),
+      );
+    }
+    final int n = _donations.length;
+    final DateTime? next = _nextEligibleDate;
+    final DateTime today = DateTime.now();
+    String statusText;
+    Color statusColor;
+    if (next == null) {
+      statusText = 'ابھی کوئی عطیہ ریکارڈ نہیں — پہلا عطیہ دیں اور یہاں درج کریں۔';
+      statusColor = Colors.black54;
+    } else if (next.isAfter(today)) {
+      final int days = next.difference(today).inDays + 1;
+      statusText = 'اگلا عطیہ $days دن بعد (90 دن کے وقفے کے بعد)۔';
+      statusColor = const Color(0xFFEF6C00);
+    } else {
+      statusText = 'آپ اب عطیے کے اہل ہیں — جزاک اللہ! 🎉';
+      statusColor = const Color(0xFF2E7D32);
+    }
+    final String dateFmt = (int ms) {
+      final DateTime d = DateTime.fromMillisecondsSinceEpoch(ms);
+      return '${d.day}/${d.month}/${d.year}';
+    };
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Text(_milestoneEmoji(n),
+                    style: const TextStyle(fontSize: 34)),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('کل عطیات: $n',
+                          style: const TextStyle(
+                              fontSize: 18, fontWeight: FontWeight.w900)),
+                      Text(_milestoneLabel(n),
+                          style: const TextStyle(
+                              color: Colors.black54, fontSize: 13)),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(statusText,
+                style: TextStyle(
+                    color: statusColor, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: _logDonation,
+                icon: const Icon(Icons.add),
+                label: const Text('آج کا عطیہ ریکارڈ کریں'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFC8102E),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                ),
+              ),
+            ),
+            if (_donations.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              const Text('عطیات کی تاریخیں:',
+                  style: TextStyle(fontWeight: FontWeight.w800)),
+              ..._donations.reversed.map((int ms) => ListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.bloodtype,
+                        color: Color(0xFFC8102E)),
+                    title: Text('خون کا عطیہ — ${dateFmt(ms)}'),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.delete_outline),
+                      onPressed: () => _deleteDonation(ms),
+                    ),
+                  )),
+            ],
+            const SizedBox(height: 8),
+            const Text(
+              'یہ ریکارڈ صرف اس فون میں محفوظ ہے — کسی سرور کو نہیں بھیجا جاتا۔',
+              style: TextStyle(color: Colors.black54, fontSize: 12),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _infoCard(String icon, String title, String body) {
     return Card(
       margin: const EdgeInsets.only(top: 8),
@@ -3902,6 +4157,244 @@ class _InfoTabState extends State<InfoTab> {
                 style: const TextStyle(color: Colors.black54)),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Personal donation history, stored ON THE DEVICE ONLY in
+/// SharedPreferences (key 'doner_donation_dates_v1'): a JSON list of
+/// epoch-millisecond timestamps. Powers the "My donation record"
+/// tracker card in InfoTab — milestone badges + the 90-day
+/// next-eligibility countdown. Nothing is ever sent to any server.
+class DonationLog {
+  static const String _key = 'doner_donation_dates_v1';
+
+  static Future<List<int>> load() async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    final String? raw = prefs.getString(_key);
+    if (raw == null || raw.isEmpty) return <int>[];
+    try {
+      final List<dynamic> decoded = jsonDecode(raw) as List<dynamic>;
+      final List<int> out = decoded.whereType<int>().toList()..sort();
+      return out;
+    } catch (_) {
+      return <int>[];
+    }
+  }
+
+  static Future<void> save(List<int> dates) async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_key, jsonEncode(dates));
+  }
+}
+
+/// One yes/no question in the eligibility self-screen.
+class EligibilityQuestion {
+  final String text;
+  final String blocker;
+  const EligibilityQuestion({required this.text, required this.blocker});
+}
+
+/// Interactive blood-donation eligibility self-screen (SELF-SCREEN
+/// ONLY — not medical advice). The donor answers yes/no questions;
+/// if every answer is "yes" they are preliminarily eligible, otherwise
+/// the blockers are listed. A disclaimer is shown top and bottom:
+/// final eligibility is always decided by the hospital/blood bank.
+class EligibilityScreen extends StatefulWidget {
+  const EligibilityScreen({super.key});
+
+  @override
+  State<EligibilityScreen> createState() => _EligibilityScreenState();
+}
+
+class _EligibilityScreenState extends State<EligibilityScreen> {
+  static const List<EligibilityQuestion> _questions = <EligibilityQuestion>[
+    EligibilityQuestion(
+      text: 'میری عمر 18 سے 65 سال کے درمیان ہے۔',
+      blocker: 'عمر 18 سے 65 سال کے درمیان ہونی چاہیے۔',
+    ),
+    EligibilityQuestion(
+      text: 'میرا وزن کم از کم 50 کلوگرام ہے۔',
+      blocker: 'وزن کم از کم 50 کلوگرام ہونا چاہیے۔',
+    ),
+    EligibilityQuestion(
+      text: 'میرے آخری خون کے عطیے کو کم از کم 3 ماہ ہو گئے ہیں۔',
+      blocker: 'دو عطیات کے درمیان کم از کم 3 ماہ کا وقفہ ضروری ہے۔',
+    ),
+    EligibilityQuestion(
+      text: 'آج مجھے بخار، نزلہ، زکام یا کوئی انفیکشن نہیں ہے۔',
+      blocker: 'بخار/انفیکشن کی صورت میں عطیہ مؤخر کریں۔',
+    ),
+    EligibilityQuestion(
+      text: 'میں فی الحال کوئی اینٹی بائیوٹک دوا استعمال نہیں کر رہا/رہی۔',
+      blocker: 'اینٹی بائیوٹک کے دوران عطیہ مؤخر کریں۔',
+    ),
+    EligibilityQuestion(
+      text: 'میں حاملہ نہیں ہوں اور نہ ہی بچے کو دودھ پلا رہی ہوں۔',
+      blocker: 'حمل یا دودھ پلانے کے دوران عطیہ نہ دیں۔',
+    ),
+    EligibilityQuestion(
+      text: 'پچھلے 6 ماہ میں میرا کوئی بڑا آپریشن یا سنگین بیماری نہیں ہوئی۔',
+      blocker: 'بڑے آپریشن/بیماری کے بعد ڈاکٹر سے مشورہ کریں۔',
+    ),
+  ];
+
+  final Map<int, bool> _answers = <int, bool>{};
+  bool _showResult = false;
+
+  List<String> get _blockers {
+    final List<String> out = <String>[];
+    for (int i = 0; i < _questions.length; i++) {
+      if (_answers[i] == false) out.add(_questions[i].blocker);
+    }
+    return out;
+  }
+
+  bool get _allAnswered => _answers.length == _questions.length;
+
+  void _checkResult() {
+    if (!_allAnswered) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('براہ کرم تمام سوالات کے جواب دیں۔')),
+      );
+      return;
+    }
+    setState(() => _showResult = true);
+  }
+
+  Widget _answerButtons(int index) {
+    final bool? answer = _answers[index];
+    return Row(
+      children: [
+        Expanded(
+          child: OutlinedButton(
+            onPressed: () => setState(() {
+              _answers[index] = true;
+              _showResult = false;
+            }),
+            style: OutlinedButton.styleFrom(
+              backgroundColor:
+                  answer == true ? const Color(0xFF2E7D32) : null,
+              foregroundColor: answer == true ? Colors.white : null,
+            ),
+            child: const Text('ہاں'),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: OutlinedButton(
+            onPressed: () => setState(() {
+              _answers[index] = false;
+              _showResult = false;
+            }),
+            style: OutlinedButton.styleFrom(
+              backgroundColor:
+                  answer == false ? const Color(0xFFC8102E) : null,
+              foregroundColor: answer == false ? Colors.white : null,
+            ),
+            child: const Text('نہیں'),
+          ),
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final List<String> blockers = _blockers;
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('اہلیت خود جانچیں'),
+        backgroundColor: const Color(0xFFC8102E),
+        foregroundColor: Colors.white,
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          const Card(
+            color: Color(0xFFFFF3E0),
+            child: Padding(
+              padding: EdgeInsets.all(12),
+              child: Text(
+                '⚠️ یہ صرف ابتدائی خود جانچ ہے — حتمی اہلیت کا فیصلہ '
+                'ہسپتال یا بلڈ بینک کرے گا۔',
+                style: TextStyle(fontWeight: FontWeight.w700),
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          ...List<Widget>.generate(_questions.length, (int i) {
+            return Card(
+              margin: const EdgeInsets.only(top: 8),
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(_questions[i].text,
+                        style: const TextStyle(
+                            fontWeight: FontWeight.w700, fontSize: 15)),
+                    const SizedBox(height: 8),
+                    _answerButtons(i),
+                  ],
+                ),
+              ),
+            );
+          }),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: _checkResult,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFC8102E),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+              ),
+              child: const Text('نتیجہ دیکھیں'),
+            ),
+          ),
+          if (_showResult) ...[
+            const SizedBox(height: 12),
+            Card(
+              color: blockers.isEmpty
+                  ? const Color(0xFFE8F5E9)
+                  : const Color(0xFFFFEBEE),
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      blockers.isEmpty
+                          ? '🎉 مبارک! آپ ابتدائی طور پر اہل لگتے ہیں۔'
+                          : '⏸️ فی الحال عطیہ مؤخر کریں:',
+                      style: const TextStyle(
+                          fontSize: 17, fontWeight: FontWeight.w900),
+                    ),
+                    if (blockers.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      ...blockers.map((String b) => Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: Text('• $b',
+                                style: const TextStyle(
+                                    color: Colors.black87)),
+                          )),
+                    ],
+                    const SizedBox(height: 10),
+                    const Text(
+                      'حتمی فیصلہ ہمیشہ ہسپتال/بلڈ بینک کی اسکریننگ کرے گی۔',
+                      style: TextStyle(
+                          color: Colors.black54, fontSize: 13),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+          const SizedBox(height: 20),
+        ],
       ),
     );
   }
