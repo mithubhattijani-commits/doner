@@ -1,7 +1,7 @@
 name: doner
 description: "Doner — Aman Blood Donor Society of Pakistan app: donor directory, social home feed, and in-app updates."
 publish_to: 'none'
-version: 1.0.2+3
+version: 1.0.3+4
 
 environment:
   sdk: ^3.13.7
@@ -29,6 +29,7 @@ flutter:
     - assets/logo.jpg
     - assets/chairman.jpg
     - assets/spokesman.png
+    - assets/jaani_ad_banner.jpg
   
 
 

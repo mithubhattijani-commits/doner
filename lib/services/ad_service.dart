@@ -42,7 +42,12 @@ class AdService {
   static bool _appOpenShownThisLaunch = false;
 
   static Future<void> init() async {
-    await MobileAds.instance.initialize();
+    // ROOT-CAUSE FIX (Jaani, 2 Nov 2026): bounded init — a wedged
+    // Play-services must never block app startup (ANR guard).
+    try {
+      await MobileAds.instance.initialize()
+          .timeout(const Duration(seconds: 10));
+    } catch (_) {}
     _load();
     _loadAppOpen();
   }

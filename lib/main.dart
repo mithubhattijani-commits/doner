@@ -97,6 +97,8 @@ Future<void> main() async {
   // Interstitial = frequency-capped on non-critical tab switches.
   unawaited(UnityAdsService.init());
   await ConfigService.loadFromCache();
+  // Featured Donor boost state (7-day reward) — fast local read.
+  await FeaturedBoost.refresh();
   runApp(const DonerApp());
   // Launch fetch: refreshes content in the background. On any failure
   // the cached/default config stays in place (fail-soft, silent).
@@ -2490,9 +2492,25 @@ class _DirectoryTabState extends State<DirectoryTab> {
     if (_liveCache.containsKey(key)) {
       final donors = _liveCache[key]!;
       if (donors.isEmpty) return _donorEmptyState();
-      final List<PublicDonor> shown = _groupFilter == null
+      final List<PublicDonor> base = _groupFilter == null
           ? donors
           : donors.where((d) => d.group == _groupFilter).toList();
+      // Featured Donor boost (Jaani, 2 Nov 2026): the user's own profile
+      // pins to the top with a badge while the 7-day boost is active.
+      final List<PublicDonor> shown;
+      if (FeaturedBoost.active) {
+        final List<PublicDonor> feat =
+            base.where(FeaturedBoost.isOwn).toList();
+        if (feat.isEmpty) {
+          shown = base;
+        } else {
+          final List<PublicDonor> rest =
+              base.where((d) => !FeaturedBoost.isOwn(d)).toList();
+          shown = [...feat, ...rest];
+        }
+      } else {
+        shown = base;
+      }
       return Column(
         children: [
           _groupFilterRow(donors),
@@ -2528,10 +2546,31 @@ class _DirectoryTabState extends State<DirectoryTab> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(d.name,
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.w800,
-                                    fontSize: 17)),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(d.name,
+                                      style: const TextStyle(
+                                          fontWeight: FontWeight.w800,
+                                          fontSize: 17)),
+                                ),
+                                if (FeaturedBoost.isFeatured(d))
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 8, vertical: 3),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFFFD76A),
+                                      borderRadius:
+                                          BorderRadius.circular(999),
+                                    ),
+                                    child: const Text('⭐ Featured',
+                                        style: TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w800,
+                                            color: Colors.black87)),
+                                  ),
+                              ],
+                            ),
                             if (d.address.isNotEmpty)
                               Text('📍 ${d.address}',
                                   style: const TextStyle(
@@ -3024,6 +3063,10 @@ class _RegisterTabState extends State<RegisterTab> {
             ],
           ),
         ),
+        if (_mine.isNotEmpty) ...[
+          const _FeaturedBoostCard(),
+          const SizedBox(height: 8),
+        ],
         if (config.donorCard && _mine.isNotEmpty) ...[
           sectionTitle('🪪 میرا ڈونر کارڈ'),
           const Text(
@@ -3715,6 +3758,8 @@ class _InfoTabState extends State<InfoTab> {
           config.about,
           style: const TextStyle(color: Colors.black54),
         ),
+        const SizedBox(height: 8),
+        const AdvertisingBanner(),
         const SizedBox(height: 8),
         _infoCard('🎯', 'ہمارا مشن', config.mission),
         _infoCard('🤝', 'رضاکار ڈونرز', config.volunteers),
@@ -4488,5 +4533,276 @@ class _UnitySupportCardState extends State<UnitySupportCard> {
 }
 
 
+// ===================== FEATURED DONOR BOOST (v1.0.3) =====================
+/// "Featured Donor" reward (Jaani, 2 Nov 2026): the user watches a Unity
+/// rewarded video (strictly opt-in, from their own donor card) and their own
+/// registered donor profile is pinned to the top of the directory list with
+/// a ⭐ Featured badge for 7 days. Expiry persists in SharedPreferences.
+/// The reward is granted ONLY when the rewarded video completes fully —
+/// skipped or failed shows grant nothing. Call, WhatsApp and navigation
+/// flows are never gated by this.
+class FeaturedBoost {
+  static const String _key = 'doner_featured_boost_until_ms';
+  static const Duration boostDuration = Duration(days: 7);
 
+  static bool active = false;
+  static int remainingDays = 0;
+  static List<DonorEntry> myEntries = const [];
 
+  /// Load state from SharedPreferences into the in-memory cache.
+  /// Called once at startup and after every grant.
+  static Future<void> refresh() async {
+    try {
+      final SharedPreferences prefs =
+          await SharedPreferences.getInstance();
+      final int until = prefs.getInt(_key) ?? 0;
+      final int now = DateTime.now().millisecondsSinceEpoch;
+      active = until > now;
+      remainingDays =
+          active ? ((until - now) / 86400000).ceil().clamp(1, 7) : 0;
+      final List<String> raw =
+          prefs.getStringList('abd_my_registrations') ?? const [];
+      myEntries = raw
+          .map((s) =>
+              DonorEntry.fromJson(jsonDecode(s) as Map<String, dynamic>))
+          .toList();
+    } catch (_) {
+      active = false;
+      remainingDays = 0;
+    }
+  }
+
+  /// Grant a fresh 7-day boost starting now.
+  static Future<void> grant() async {
+    try {
+      final SharedPreferences prefs =
+          await SharedPreferences.getInstance();
+      await prefs.setInt(
+          _key,
+          DateTime.now()
+              .add(boostDuration)
+              .millisecondsSinceEpoch);
+    } catch (_) {
+      // A storage failure just means the boost won't persist; the
+      // in-memory state still updates via refresh().
+    }
+    await refresh();
+  }
+
+  static String _norm(String s) => s.trim().toLowerCase();
+
+  /// True when the public directory entry matches one of the user's own
+  /// registered donor profiles (name + blood group + district + area).
+  static bool isOwn(PublicDonor d) {
+    final String n = _norm(d.name);
+    if (n.isEmpty) return false;
+    return myEntries.any((e) =>
+        _norm(e.name) == n &&
+        e.group == d.group &&
+        _norm(e.district) == _norm(d.district) &&
+        _norm(e.area) == _norm(d.area));
+  }
+
+  /// True when this entry should be pinned with the Featured badge.
+  static bool isFeatured(PublicDonor d) => active && isOwn(d);
+}
+
+/// Opt-in "Featured Donor" card shown above the user's own donor card(s).
+/// One rewarded video -> 7-day featured boost. Strictly voluntary.
+class _FeaturedBoostCard extends StatefulWidget {
+  const _FeaturedBoostCard();
+
+  @override
+  State<_FeaturedBoostCard> createState() => _FeaturedBoostCardState();
+}
+
+class _FeaturedBoostCardState extends State<_FeaturedBoostCard> {
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    FeaturedBoost.refresh().then((_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  Future<void> _watchAd() async {
+    if (_busy) return;
+    if (!UnityAdsService.isInitialized) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('اشتہار ابھی تیار نہیں — تھوڑی دیر بعد کوشش کریں')),
+      );
+      return;
+    }
+    setState(() => _busy = true);
+    final UnityAdResult result = await UnityAdsService.showRewardedAd();
+    if (!mounted) return;
+    setState(() => _busy = false);
+    if (result == UnityAdResult.completed) {
+      await FeaturedBoost.grant();
+      if (!mounted) return;
+      setState(() {});
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text(
+                '⭐ مبارک! آپ کا ڈونر پروفائل 7 دن تک ڈائریکٹری میں سب سے اوپر نمایاں رہے گا')),
+      );
+    } else if (result == UnityAdResult.skipped) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('اشتہار ادھورا رہ گیا — مکمل دیکھنے پر Featured ملے گا')),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('اشتہار نہیں چل سکا — دوبارہ کوشش کریں')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bool active = FeaturedBoost.active;
+    return Card(
+      color: const Color(0xFFFFF3D6),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              '⭐ Featured Donor',
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w900),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              active
+                  ? 'آپ کا پروفائل ڈائریکٹری میں سب سے اوپر نمایاں ہے — ${FeaturedBoost.remainingDays} دن باقی ہیں۔'
+                  : 'ایک مختصر اشتہار دیکھیں اور اپنا ڈونر پروفائل 7 دن تک ڈائریکٹری میں سب سے اوپر نمایاں کریں۔ یہ مکمل طور پر اختیاری ہے۔',
+              style: const TextStyle(color: Colors.black54),
+            ),
+            if (!active) ...[
+              const SizedBox(height: 10),
+              ElevatedButton.icon(
+                onPressed: _busy ? null : _watchAd,
+                icon: _busy
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.white),
+                      )
+                    : const Icon(Icons.play_circle_outline),
+                label: Text(
+                    _busy ? 'اشتہار چل رہا ہے…' : 'اشتہار دیکھیں اور Featured بنیں'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFC8102E),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ===================== ADVERTISING BANNER (v1.0.3) =====================
+/// In-app advertising banner (Jaani, 2 Nov 2026): placed in the About
+/// section. Tapping opens a WhatsApp chat with Nigraan TV for ad bookings.
+class AdvertisingBanner extends StatelessWidget {
+  const AdvertisingBanner({super.key});
+
+  static const String _waUrl = 'https://wa.me/923090808180';
+
+  Future<void> _openWhatsApp() async {
+    final Uri uri = Uri.parse(_waUrl);
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      elevation: 3,
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16)),
+      child: InkWell(
+        onTap: _openWhatsApp,
+        child: Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              colors: [
+                Color(0xFF0F2027),
+                Color(0xFF203A43),
+                Color(0xFF2C5364),
+              ],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+          ),
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: Image.asset(
+                  'assets/jaani_ad_banner.jpg',
+                  width: 84,
+                  height: 112,
+                  fit: BoxFit.cover,
+                ),
+              ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'For Advertising',
+                      style: TextStyle(
+                        color: Color(0xFFFFD76A),
+                        fontSize: 19,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    SizedBox(height: 6),
+                    Text(
+                      'Contact Us on WhatsApp:',
+                      style: TextStyle(
+                          color: Colors.white70, fontSize: 13),
+                    ),
+                    SizedBox(height: 2),
+                    Row(
+                      children: [
+                        Icon(Icons.chat,
+                            color: Color(0xFF25D366), size: 18),
+                        SizedBox(width: 6),
+                        Text(
+                          '03090808180',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 17,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
