@@ -9,8 +9,8 @@
 // Respect rules (blood-donation purpose):
 // - Rewarded is VOLUNTARY only: a "support the society" button in the
 //   Info tab. Never gates any feature, never blocks a critical flow.
-// - Interstitial is frequency-capped: at most once per 3 bottom-nav
-//   tab switches AND at least 90 seconds apart, and NEVER when the
+// - Interstitial is frequency-capped: at most once per 10 bottom-nav
+//   tab switches AND at least 5 minutes apart, and NEVER when the
 //   user is heading to the Directory (donor search) or Register
 //   (donor registration) tabs — those are critical flows.
 // - Every show is best-effort: a failed load/show is a silent no-op,
@@ -41,8 +41,8 @@ class UnityAdsService {
   // ---- Interstitial frequency cap ----
   static int _tabSwitchesSinceAd = 0;
   static DateTime? _lastInterstitialAt;
-  static const int _switchesPerAd = 3;
-  static const Duration _minGap = Duration(seconds: 90);
+  static const int _switchesPerAd = 10;
+  static const Duration _minGap = Duration(minutes: 5);
 
   /// Whether the SDK initialized successfully.
   static bool get isInitialized => _initialized;
