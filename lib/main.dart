@@ -3273,7 +3273,7 @@ class _RegisterTabState extends State<RegisterTab> {
                               style: TextStyle(fontWeight: FontWeight.w700)),
                           Switch(
                             value: e.available,
-                            activeColor: const Color(0xFF2E7D32),
+                            activeThumbColor: const Color(0xFF2E7D32),
                             onChanged: (bool v) =>
                                 _updateEntry(e, e.copyWith(available: v)),
                           ),
