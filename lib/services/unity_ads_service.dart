@@ -31,6 +31,10 @@ class UnityAdsService {
   /// Keep true while testing. Production builds set this to false.
   static const bool testMode = false;
 
+  /// MASTER AD KILL-SWITCH (Jaani, 2 Nov 2026): ALL Unity ads OFF for now.
+  /// Set to true when Jaani orders ads back (then max 1-2 per visit).
+  static const bool adsEnabled = false;
+
   static bool _initialized = false;
   static bool _initFailed = false;
   static bool _initStarted = false;
@@ -51,6 +55,7 @@ class UnityAdsService {
   /// subsequent calls are no-ops. Never throws, never blocks startup
   /// beyond 10 seconds.
   static Future<void> init() async {
+    if (!adsEnabled) return;
     if (_initialized || _initFailed || _initStarted) return;
     _initStarted = true;
     try {
@@ -114,6 +119,7 @@ class UnityAdsService {
   /// [UnityAdResult.skipped] when they skipped early, [UnityAdResult.failed]
   /// on error. Never throws.
   static Future<UnityAdResult> showRewardedAd() async {
+    if (!adsEnabled) return UnityAdResult.failed;
     if (!_initialized) return UnityAdResult.failed;
     try {
       final completer = Completer<UnityAdResult>();
@@ -188,6 +194,10 @@ class UnityAdsService {
     required bool targetIsCritical,
     required void Function() onDone,
   }) {
+    if (!adsEnabled) {
+      onDone();
+      return;
+    }
     _tabSwitchesSinceAd++;
     if (targetIsCritical || !_capAllows()) {
       onDone();

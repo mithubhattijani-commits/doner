@@ -25,6 +25,10 @@ import 'package:flutter/material.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 
 class AdService {
+  /// MASTER AD KILL-SWITCH (Jaani, 2 Nov 2026): ALL AdMob ads OFF for now.
+  /// Set to true when Jaani orders ads back (then max 1-2 per visit).
+  static const bool adsEnabled = false;
+
   static const String interstitialUnitId =
       'ca-app-pub-3940256099942544/1033173712';
   static const String bannerUnitId =
@@ -118,6 +122,7 @@ class AdService {
   /// Shows the app-open ad once per cold start, if one is loaded.
   /// Never blocks the UI: if no ad is ready, this is a silent no-op.
   static void showAppOpenOnce() {
+    if (!adsEnabled) return;
     if (_appOpenShownThisLaunch) return;
     _appOpenShownThisLaunch = true;
     final ad = _appOpenAd;
