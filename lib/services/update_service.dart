@@ -407,54 +407,39 @@ class UpdateService {
     }
   }
 
-  /// Downloads the APK (with a progress dialog) and fires the system
-  /// install prompt. Never attempts a silent install. Used by the
-  /// manual check's "اپ ڈیٹ" button. The dialog shows REAL progress:
-  /// % done AND % remaining (+ MB done / MB total) while the size is
-  /// known, live status text while it is not.
+  /// Downloads the APK in the BACKGROUND and fires the system install
+  /// prompt when ready. Never attempts a silent install. Used by the
+  /// manual check's "اپ ڈیٹ" button.
+  ///
+  /// Jaani's order (2 Nov 2026): tapping "اپ ڈیٹ" must NOT lock the app
+  /// behind a modal progress dialog. The download runs in the background,
+  /// the user keeps using the app, and the install prompt appears only
+  /// when the APK is ready.
   static Future<void> downloadAndInstall(
     BuildContext context,
     UpdateInfo update,
   ) async {
-    final progress = ValueNotifier<UpdateDownloadProgress?>(null);
-    var dialogOpen = false;
-    showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => ValueListenableBuilder<UpdateDownloadProgress?>(
-        valueListenable: progress,
-        builder: (_, value, _) {
-          final known = value != null && value.known;
-          return AlertDialog(
-            title: const Text('اپ ڈیٹ ڈاؤن لوڈ ہو رہا ہے'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                LinearProgressIndicator(
-                    value: known ? value.fraction : null),
-                const SizedBox(height: 12),
-                Text(
-                  known
-                      ? '${value.percentDone}٪ مکمل — '
-                          '${value.percentLeft}٪ باقی\n${value.mbLine}'
-                      : 'ڈاؤن لوڈ ہو رہا ہے…',
-                ),
-              ],
-            ),
-          );
-        },
-      ),
-    );
-    dialogOpen = true;
+    launchProgress.value =
+        const UpdateDownloadProgress(received: 0, total: -1);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'اپ ڈیٹ بیک گراؤنڈ میں ڈاؤن لوڈ ہو رہی ہے — آپ ایپ '
+            'استعمال کرتے رہیں۔',
+          ),
+          duration: Duration(seconds: 4),
+        ),
+      );
+    }
     try {
       final file = await _apkFile(update.versionCode);
       if (await file.exists()) await file.delete();
       final downloaded = await _downloadApk(update, onProgress: (r, t) {
-        progress.value = UpdateDownloadProgress(received: r, total: t);
+        launchProgress.value = UpdateDownloadProgress(received: r, total: t);
       });
+      launchProgress.value = null;
       if (!context.mounted) return;
-      Navigator.pop(context);
-      dialogOpen = false;
       if (downloaded == null) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -466,10 +451,10 @@ class UpdateService {
         );
         return;
       }
-      await _openInstaller(context, downloaded);
+      _showInstallPrompt(context, update, downloaded);
     } catch (_) {
+      launchProgress.value = null;
       if (context.mounted) {
-        if (dialogOpen) Navigator.pop(context);
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
@@ -479,8 +464,6 @@ class UpdateService {
           ),
         );
       }
-    } finally {
-      progress.dispose();
     }
   }
 }
