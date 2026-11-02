@@ -39,12 +39,19 @@
 // every user-visible process shows live progress — real % for the APK
 // download and photo uploads, live Urdu status text for server waits.
 // No silent screens, no fake timer percentages.
+// V1.0.5 adds unified Remote Config v1
+// (services/remote_config_service.dart): server-driven display name,
+// logo, announcement bar, sponsored ads and a force-update kill-switch,
+// all from nigraantv.xyz/apps/config/doner.json — changeable without an
+// app update. The older config_service.dart (doner-config.json) stays
+// untouched.
 
 import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -53,6 +60,7 @@ import 'services/ad_service.dart';
 import 'services/api_service.dart';
 import 'services/auth_service.dart';
 import 'services/config_service.dart';
+import 'services/remote_config_service.dart';
 import 'services/unity_ads_service.dart';
 import 'services/update_service.dart';
 import 'package:flutter/services.dart';
@@ -97,6 +105,9 @@ Future<void> main() async {
   // Interstitial = frequency-capped on non-critical tab switches.
   unawaited(UnityAdsService.init());
   await ConfigService.loadFromCache();
+  // Unified Remote Config v1: returns fast (cache load only); the
+  // network refresh runs in the background. Never blocks startup.
+  await remoteConfigService.init();
   // Featured Donor boost state (7-day reward) — fast local read.
   await FeaturedBoost.refresh();
   runApp(const DonerApp());
@@ -139,6 +150,10 @@ class HomeShell extends StatefulWidget {
 class _HomeShellState extends State<HomeShell> {
   int _tab = 0;
 
+  /// Set the first time the force-update dialog shows: it appears at
+  /// most once per app launch.
+  bool _forceUpdateShown = false;
+
   @override
   void initState() {
     super.initState();
@@ -146,6 +161,67 @@ class _HomeShellState extends State<HomeShell> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) UpdateService.checkOnLaunch(context);
     });
+    // Remote-config force-update kill-switch: check once after the first
+    // frame, and again whenever a fresh config lands in the background.
+    remoteConfigService.notifier.addListener(_maybeShowForceUpdate);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _maybeShowForceUpdate();
+    });
+  }
+
+  @override
+  void dispose() {
+    remoteConfigService.notifier.removeListener(_maybeShowForceUpdate);
+    super.dispose();
+  }
+
+  /// Non-dismissible "update required" dialog when the server says this
+  /// build is below the minimum. The Update button triggers the existing
+  /// in-app update flow (UpdateService.checkManually). Fail-soft: any
+  /// error just skips the dialog — the app keeps working.
+  Future<void> _maybeShowForceUpdate() async {
+    if (_forceUpdateShown || !mounted) return;
+    final RemoteConfig cfg = remoteConfigService.config;
+    if (!cfg.forceUpdate.enabled || cfg.forceUpdate.minVersionCode <= 0) {
+      return;
+    }
+    _forceUpdateShown = true;
+    try {
+      final PackageInfo info = await PackageInfo.fromPlatform();
+      if (!mounted) return;
+      final int installed = int.tryParse(info.buildNumber) ?? 0;
+      if (installed >= cfg.forceUpdate.minVersionCode) return;
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (BuildContext dialogContext) {
+          return PopScope(
+            canPop: false,
+            child: AlertDialog(
+              title: const Text('اپ ڈیٹ ضروری ہے'),
+              content: const Text(
+                'اس ایپ کا نیا ورژن دستیاب ہے۔ جاری رکھنے کے لیے براہ کرم ابھی اپ ڈیٹ کریں۔',
+              ),
+              actions: [
+                ElevatedButton(
+                  onPressed: () {
+                    Navigator.of(dialogContext).pop();
+                    UpdateService.checkManually(context);
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFC8102E),
+                    foregroundColor: Colors.white,
+                  ),
+                  child: const Text('اپ ڈیٹ کریں'),
+                ),
+              ],
+            ),
+          );
+        },
+      );
+    } catch (_) {
+      // Fail-soft: never crash on a version/config hiccup.
+    }
   }
 
   // Tabs are built dynamically in build() so features.directory=false
@@ -169,10 +245,13 @@ class _HomeShellState extends State<HomeShell> {
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<DonerConfig>(
-      valueListenable: ConfigService.notifier,
-      builder: (context, config, _) {
-        final tabs = <Widget>[const HomeTab()];
+    return ValueListenableBuilder<RemoteConfig>(
+      valueListenable: remoteConfigService.notifier,
+      builder: (BuildContext context, RemoteConfig remote, _) {
+        return ValueListenableBuilder<DonerConfig>(
+          valueListenable: ConfigService.notifier,
+          builder: (context, config, _) {
+            final tabs = <Widget>[const HomeTab()];
         final items = <BottomNavigationBarItem>[
           const BottomNavigationBarItem(icon: Icon(Icons.home), label: 'ہوم'),
         ];
@@ -195,7 +274,8 @@ class _HomeShellState extends State<HomeShell> {
             tabs[index] is HomeTab || tabs[index] is DirectoryTab;
         return Scaffold(
       appBar: AppBar(
-        title: const Text('Doner'),
+        title: Text(
+            remote.displayName.isNotEmpty ? remote.displayName : 'Doner'),
         backgroundColor: const Color(0xFFC8102E),
         foregroundColor: Colors.white,
         centerTitle: true,
@@ -235,7 +315,9 @@ class _HomeShellState extends State<HomeShell> {
         selectedItemColor: const Color(0xFFC8102E),
         onTap: (i) => _onTabTap(i, tabs),
         items: items,
-      ),
+          ),
+        );
+          },
         );
       },
     );
@@ -301,6 +383,127 @@ Widget announcementBanner(String text) {
       style: const TextStyle(
           fontWeight: FontWeight.w800, color: Color(0xFF8F0B21)),
     ),
+  );
+}
+
+/// Unified Remote Config v1 banner slot (home screen top): server-driven
+/// announcement bar + sponsored ad card. Both fail-soft to nothing.
+Widget remoteHomeBanner() {
+  return ValueListenableBuilder<RemoteConfig>(
+    valueListenable: remoteConfigService.notifier,
+    builder: (BuildContext context, RemoteConfig cfg, _) {
+      final List<Widget> items = <Widget>[];
+      if (cfg.announcement.show) {
+        items.add(remoteAnnouncementBar(cfg.announcement.text));
+      }
+      if (cfg.sponsoredAd.show) {
+        items.add(remoteSponsoredAdCard(cfg.sponsoredAd));
+      }
+      if (items.isEmpty) return const SizedBox.shrink();
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: items,
+      );
+    },
+  );
+}
+
+/// Server announcement bar: a slim in-flow strip (never a Stack overlay)
+/// so it can never cover an action button. Shown only when enabled AND
+/// the text is non-empty.
+Widget remoteAnnouncementBar(String text) {
+  return Container(
+    width: double.infinity,
+    color: const Color(0xFF1B5E20),
+    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+    margin: const EdgeInsets.only(bottom: 12),
+    child: Text(
+      '📢 $text',
+      textAlign: TextAlign.center,
+      style:
+          const TextStyle(fontWeight: FontWeight.w800, color: Colors.white),
+    ),
+  );
+}
+
+/// Opens the sponsored ad's action URL in the external browser.
+/// Never auto-opens; a bad URL just does nothing.
+Future<void> _openSponsoredAd(String url) async {
+  final Uri? uri = Uri.tryParse(url);
+  if (uri == null || !uri.hasScheme) return;
+  await launchUrl(uri, mode: LaunchMode.externalApplication);
+}
+
+/// Sponsored ad card: clearly labeled as an ad. The image is optional —
+/// the card shows the title even when the image fails to load. Tap opens
+/// the action URL in the external browser. Never blocks the app.
+Widget remoteSponsoredAdCard(SponsoredAdConfig ad) {
+  return Card(
+    margin: const EdgeInsets.only(bottom: 12),
+    color: const Color(0xFFFFF8E1),
+    child: InkWell(
+      onTap: () => _openSponsoredAd(ad.actionUrl),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              '📣 اسپانسرڈ اشتہار',
+              style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.black54),
+            ),
+            const SizedBox(height: 6),
+            if (ad.imageUrl.trim().isNotEmpty)
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Image.network(
+                  ad.imageUrl,
+                  fit: BoxFit.cover,
+                  errorBuilder: (BuildContext context, Object error,
+                      StackTrace? stackTrace) {
+                    return const SizedBox.shrink();
+                  },
+                ),
+              ),
+            if (ad.imageUrl.trim().isNotEmpty) const SizedBox(height: 8),
+            Text(
+              ad.title,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                  fontSize: 16, fontWeight: FontWeight.w800),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+/// Server logo when the config sets logo_url (with a fail-soft fallback
+/// to the bundled asset on any load error); bundled logo otherwise.
+Widget remoteLogo({double size = 110}) {
+  return ValueListenableBuilder<RemoteConfig>(
+    valueListenable: remoteConfigService.notifier,
+    builder: (BuildContext context, RemoteConfig cfg, _) {
+      if (cfg.logoUrl.trim().isEmpty) {
+        return Image.asset('assets/logo.jpg',
+            width: size, height: size, fit: BoxFit.cover);
+      }
+      return Image.network(
+        cfg.logoUrl,
+        width: size,
+        height: size,
+        fit: BoxFit.cover,
+        errorBuilder:
+            (BuildContext context, Object error, StackTrace? stackTrace) {
+          return Image.asset('assets/logo.jpg',
+              width: size, height: size, fit: BoxFit.cover);
+        },
+      );
+    },
   );
 }
 
@@ -752,10 +955,13 @@ class _HomeTabState extends State<HomeTab> {
         return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        // Unified Remote Config v1: server-driven announcement bar and
+        // sponsored ad card. Shown only when the server enables them;
+        // fail-soft to nothing on any fetch failure.
+        remoteHomeBanner(),
         Center(
           child: ClipOval(
-            child: Image.asset('assets/logo.jpg', width: 110, height: 110,
-                fit: BoxFit.cover),
+            child: remoteLogo(),
           ),
         ),
         const SizedBox(height: 12),
@@ -4998,3 +5204,4 @@ class AdvertisingBanner extends StatelessWidget {
     );
   }
 }
+
