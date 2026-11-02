@@ -514,10 +514,17 @@ class _HomeTabState extends State<HomeTab> {
   }
 
   Future<void> _openSosSheet() async {
+    // Prefill contact details from the most recent request: in an
+    // emergency every second counts, so the hospital/city/contact
+    // fields carry over and the user only changes what is different.
+    final List<SosRequest> sorted = List<SosRequest>.from(_sos)
+      ..sort((SosRequest a, SosRequest b) =>
+          b.createdAtMs.compareTo(a.createdAtMs));
     final SosRequest? created = await showModalBottomSheet<SosRequest>(
       context: context,
       isScrollControlled: true,
-      builder: (_) => const SosRequestSheet(),
+      builder: (_) =>
+          SosRequestSheet(prefill: sorted.isEmpty ? null : sorted.first),
     );
     if (created != null) {
       setState(() => _sos = <SosRequest>[..._sos, created]);
@@ -1010,7 +1017,11 @@ class _HomeTabState extends State<HomeTab> {
 /// Bottom-sheet composer for an urgent blood request. Returns the created
 /// SosRequest (not yet saved — the caller stores it) or null on cancel.
 class SosRequestSheet extends StatefulWidget {
-  const SosRequestSheet({super.key});
+  /// Optional previous request: its hospital/city/contact details are
+  /// prefilled so a repeat emergency request takes seconds, not minutes.
+  final SosRequest? prefill;
+
+  const SosRequestSheet({super.key, this.prefill});
 
   @override
   State<SosRequestSheet> createState() => _SosRequestSheetState();
@@ -1024,6 +1035,20 @@ class _SosRequestSheetState extends State<SosRequestSheet> {
   final TextEditingController _phone = TextEditingController();
   String _group = bloodGroups.first;
   int _units = 1;
+
+  @override
+  void initState() {
+    super.initState();
+    final SosRequest? p = widget.prefill;
+    if (p != null) {
+      _hospital.text = p.hospital;
+      _city.text = p.city;
+      _name.text = p.name;
+      _phone.text = p.phone;
+      if (bloodGroups.contains(p.group)) _group = p.group;
+      _units = p.units;
+    }
+  }
 
   @override
   void dispose() {
@@ -1075,6 +1100,14 @@ class _SosRequestSheetState extends State<SosRequestSheet> {
                 'درخواست آپ کے فون میں محفوظ رہے گی اور 72 گھنٹے بعد خود ختم ہو جائے گی۔',
                 style: TextStyle(color: Colors.black54),
               ),
+              if (widget.prefill != null) ...[
+                const SizedBox(height: 6),
+                const Text(
+                  '📝 پچھلی درخواست کی تفصیل پہلے سے بھری گئی ہے — ضرورت ہو تو بدلیں۔',
+                  style: TextStyle(
+                      color: Colors.black54, fontWeight: FontWeight.w700),
+                ),
+              ],
               const SizedBox(height: 12),
               DropdownButtonFormField<String>(
                 initialValue: _group,
@@ -2744,6 +2777,13 @@ class DonorEntry {
   final String group;
   final String address;
 
+  /// Availability scheduling (local-only): the donor marks whether they
+  /// are currently available to donate, and — when not available — the
+  /// next date they expect to be available. Persisted with the entry,
+  /// so older saved entries (without these keys) still load cleanly.
+  final bool available;
+  final int availableFromMs;
+
   DonorEntry({
     required this.name,
     required this.phone,
@@ -2752,9 +2792,23 @@ class DonorEntry {
     required this.area,
     required this.group,
     required this.address,
+    this.available = true,
+    this.availableFromMs = 0,
   });
 
-  Map<String, String> toJson() => {
+  DonorEntry copyWith({bool? available, int? availableFromMs}) => DonorEntry(
+        name: name,
+        phone: phone,
+        province: province,
+        district: district,
+        area: area,
+        group: group,
+        address: address,
+        available: available ?? this.available,
+        availableFromMs: availableFromMs ?? this.availableFromMs,
+      );
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
         'name': name,
         'phone': phone,
         'province': province,
@@ -2762,6 +2816,8 @@ class DonorEntry {
         'area': area,
         'group': group,
         'address': address,
+        'available': available,
+        'availableFromMs': availableFromMs,
       };
 
   factory DonorEntry.fromJson(Map<String, dynamic> j) => DonorEntry(
@@ -2772,12 +2828,42 @@ class DonorEntry {
         area: j['area'] as String? ?? '',
         group: j['group'] as String? ?? '',
         address: j['address'] as String? ?? '',
+        available: j['available'] as bool? ?? true,
+        availableFromMs: (j['availableFromMs'] as num?)?.toInt() ?? 0,
       );
+
+  /// Next-availability date as d/m/yyyy, or '' when unset.
+  String get availabilityDateText {
+    if (availableFromMs <= 0) return '';
+    final DateTime d = DateTime.fromMillisecondsSinceEpoch(availableFromMs);
+    return '${d.day}/${d.month}/${d.year}';
+  }
+
+  /// Human-readable availability status for messages and UI.
+  String get availabilityText {
+    if (available) return 'فی الحال دستیاب ✅';
+    final String when = availabilityDateText;
+    return when.isEmpty
+        ? 'فی الحال دستیاب نہیں'
+        : 'فی الحال دستیاب نہیں (اگلی دستیابی: $when)';
+  }
 
   String whatsappMessage() {
     return 'السلام علیکم! میں امن بلڈ ڈونر سوسائٹی میں ڈونر کے طور پر رجسٹر ہونا چاہتا ہوں۔\n'
-        'نام: $name\nفون: $phone\nصوبہ: $province\nضلع: $district\nعلاقہ: $area\nبلڈ گروپ: $group\nپتہ: $address';
+        'نام: $name\nفون: $phone\nصوبہ: $province\nضلع: $district\nعلاقہ: $area\nبلڈ گروپ: $group\nپتہ: $address\n'
+        'دستیابی: $availabilityText';
   }
+
+  /// Public share card — NEVER includes the phone number (phones stay
+  /// admin-only, as in the social feed and directory). The donor sends
+  /// this themselves via WhatsApp or any other app.
+  String get shareText =>
+      '🩸 *ڈونر کارڈ* 🩸\n'
+      '👤 نام: $name\n'
+      '🩸 بلڈ گروپ: $group\n'
+      '📍 $address — $area، $district، $province\n'
+      '✅ دستیابی: $availabilityText\n'
+      '📲 ڈونر ایپ کے ذریعے بھیجا گیا — Aman Blood Donor Society of Pakistan';
 }
 
 class RegisterTab extends StatefulWidget {
@@ -2854,6 +2940,42 @@ class _RegisterTabState extends State<RegisterTab> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setStringList(
         'abd_my_registrations', _mine.map((e) => jsonEncode(e.toJson())).toList());
+  }
+
+  /// Replaces one donor entry (identity-based) and persists the list.
+  Future<void> _updateEntry(DonorEntry old, DonorEntry updated) async {
+    final int i = _mine.indexOf(old);
+    if (i < 0) return;
+    setState(() => _mine[i] = updated);
+    await _saveList();
+  }
+
+  /// Date picker for "next available date" when the donor is unavailable.
+  Future<void> _pickAvailabilityDate(DonorEntry e) async {
+    final DateTime now = DateTime.now();
+    final DateTime? picked = await showDatePicker(
+      context: context,
+      initialDate: now,
+      firstDate: now,
+      lastDate: now.add(const Duration(days: 365 * 2)),
+    );
+    if (picked == null) return;
+    await _updateEntry(
+        e, e.copyWith(available: false, availableFromMs: picked.millisecondsSinceEpoch));
+  }
+
+  Future<void> _shareDonorCard(DonorEntry e) async {
+    final Uri uri =
+        Uri.parse('https://wa.me/?text=${Uri.encodeComponent(e.shareText)}');
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+
+  Future<void> _copyDonorCard(DonorEntry e) async {
+    await Clipboard.setData(ClipboardData(text: e.shareText));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('ڈونر کارڈ کاپی ہو گیا۔')),
+    );
   }
 
   @override
@@ -3115,6 +3237,59 @@ class _RegisterTabState extends State<RegisterTab> {
                         child: Text('📞 ${e.phone}',
                             textAlign: TextAlign.left),
                       ),
+                      const SizedBox(height: 6),
+                      // Availability scheduling: status chip + toggle +
+                      // optional next-available date (local-only).
+                      Row(
+                        children: [
+                          Chip(
+                            label: Text(
+                              e.available ? 'دستیاب' : 'غیر دستیاب',
+                              style: const TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w700),
+                            ),
+                            backgroundColor: e.available
+                                ? const Color(0xFF2E7D32)
+                                : const Color(0xFFEF6C00),
+                            padding: EdgeInsets.zero,
+                            visualDensity: VisualDensity.compact,
+                          ),
+                          if (!e.available &&
+                              e.availabilityDateText.isNotEmpty)
+                            Expanded(
+                              child: Padding(
+                                padding: const EdgeInsets.only(right: 8),
+                                child: Text(
+                                  'اگلی دستیابی: ${e.availabilityDateText}',
+                                  style: const TextStyle(
+                                      color: Colors.black54, fontSize: 13),
+                                ),
+                              ),
+                            ),
+                          const Spacer(),
+                          const Text('میں دستیاب ہوں',
+                              style: TextStyle(fontWeight: FontWeight.w700)),
+                          Switch(
+                            value: e.available,
+                            activeColor: const Color(0xFF2E7D32),
+                            onChanged: (bool v) =>
+                                _updateEntry(e, e.copyWith(available: v)),
+                          ),
+                        ],
+                      ),
+                      if (!e.available)
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: TextButton.icon(
+                            onPressed: () => _pickAvailabilityDate(e),
+                            icon: const Icon(Icons.calendar_today, size: 18),
+                            label: Text(e.availabilityDateText.isEmpty
+                                ? 'اگلی دستیابی کی تاریخ منتخب کریں'
+                                : 'تاریخ بدلیں'),
+                          ),
+                        ),
                       const SizedBox(height: 8),
                       SizedBox(
                         width: double.infinity,
@@ -3130,6 +3305,23 @@ class _RegisterTabState extends State<RegisterTab> {
                             foregroundColor: Colors.white,
                           ),
                         ),
+                      ),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          OutlinedButton.icon(
+                            onPressed: () => _shareDonorCard(e),
+                            icon: const Icon(Icons.share, size: 18),
+                            label: const Text('کارڈ شیئر کریں'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: () => _copyDonorCard(e),
+                            icon: const Icon(Icons.copy, size: 18),
+                            label: const Text('کاپی کریں'),
+                          ),
+                        ],
                       ),
                     ],
                   ),
