@@ -45,6 +45,11 @@
 // all from nigraantv.xyz/apps/config/doner.json — changeable without an
 // app update. The older config_service.dart (doner-config.json) stays
 // untouched.
+// Daily upgrade 3 Nov 2026: (1) "report wrong donor info" on each live
+// directory row — opens the society WhatsApp with a prefilled
+// name+group+area message (public data only); (2) donation prep tips
+// card (before/after) in the Info tab. No new dependencies, no API
+// changes, no ad changes.
 
 import 'dart:async';
 import 'dart:convert';
@@ -2477,6 +2482,25 @@ class _DirectoryTabState extends State<DirectoryTab> {
     });
   }
 
+  /// "Report wrong info": opens the society's WhatsApp with a prefilled
+  /// message identifying the directory row (name + blood group + area
+  /// ONLY — the public list has no phones, and none are sent). Lets
+  /// the society fix stale or incorrect donor entries (category-standard
+  /// "report invalid donor" feature). Fully client-side, no new API.
+  Future<void> _reportDonor(
+    PublicDonor donor,
+    String area,
+    String district,
+  ) async {
+    final String message = 'السلام علیکم!\n'
+        'ڈونر ڈائریکٹری میں درج اس معلومات میں غلطی معلوم ہوتی ہے:\n'
+        'نام: ${donor.name}\n'
+        'بلڈ گروپ: ${donor.group}\n'
+        'علاقہ: $area، $district\n'
+        '\nبراہ کرم درست کریں۔ جزاک اللہ!';
+    await whatsappCentral(message);
+  }
+
 
   @override
   Widget build(BuildContext context) {
@@ -2817,6 +2841,27 @@ class _DirectoryTabState extends State<DirectoryTab> {
                             Text('$area، $district',
                                 style: const TextStyle(
                                     color: Colors.black54)),
+                            // Report a wrong/stale directory entry: the
+                            // row only carries public data, so nothing
+                            // private ever leaves the phone.
+                            Align(
+                              alignment: AlignmentDirectional.centerStart,
+                              child: TextButton.icon(
+                                onPressed: () =>
+                                    _reportDonor(d, area, district),
+                                icon: const Icon(Icons.report_outlined,
+                                    size: 16),
+                                label: const Text('غلط اطلاع رپورٹ کریں',
+                                    style: TextStyle(fontSize: 12)),
+                                style: TextButton.styleFrom(
+                                  foregroundColor: Colors.black45,
+                                  padding: EdgeInsets.zero,
+                                  minimumSize: const Size(0, 32),
+                                  tapTargetSize:
+                                      MaterialTapTargetSize.shrinkWrap,
+                                ),
+                              ),
+                            ),
                           ],
                         ),
                       ),
@@ -4196,6 +4241,7 @@ class _InfoTabState extends State<InfoTab> {
           ),
         ),
         _infoCard('⏸️', 'کب عطیہ مؤخر کریں؟', config.deferWhen),
+        _prepCard(),
         if (config.compatibility) ...[
           sectionTitle('بلڈ گروپس — کون کس کو خون دے سکتا ہے؟'),
         Text(
@@ -4558,6 +4604,48 @@ class _InfoTabState extends State<InfoTab> {
                       style: const TextStyle(color: Colors.black54)),
                 ],
               ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Donation prep tips (category-standard "donation tips and prep"):
+  /// general before/after guidance in one card. Hardcoded, honest and
+  /// generic — the detailed eligibility self-screen and the server's
+  /// donation-process steps stay untouched.
+  Widget _prepCard() {
+    const TextStyle headerStyle = TextStyle(fontWeight: FontWeight.w800);
+    const TextStyle bodyStyle =
+        TextStyle(color: Colors.black54, height: 1.6);
+    return Card(
+      margin: const EdgeInsets.only(top: 8),
+      child: const Padding(
+        padding: EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('🩸 عطیے سے پہلے اور بعد کی احتیاطیں',
+                style: TextStyle(
+                    fontWeight: FontWeight.w800, fontSize: 15)),
+            SizedBox(height: 8),
+            Text('عطیے سے پہلے:', style: headerStyle),
+            Text(
+              '• رات کو اچھی نیند لیں۔\n'
+              '• عطیے سے 2 سے 3 گھنٹے پہلے اچھا کھانا کھائیں۔\n'
+              '• کافی پانی پیئیں۔\n'
+              '• ہلکے اور ڈھیلے کپڑے پہنیں۔',
+              style: bodyStyle,
+            ),
+            SizedBox(height: 6),
+            Text('عطیے کے بعد:', style: headerStyle),
+            Text(
+              '• کچھ دیر بیٹھ کر آرام کریں۔\n'
+              '• پانی اور جوس زیادہ پیئیں۔\n'
+              '• 24 گھنٹے تک بھاری وزن نہ اٹھائیں اور سخت مشقت سے پرہیز کریں۔\n'
+              '• چکر آئیں تو فوری طور پر عملے کو بتائیں۔',
+              style: bodyStyle,
             ),
           ],
         ),
@@ -5204,4 +5292,5 @@ class AdvertisingBanner extends StatelessWidget {
     );
   }
 }
+
 
