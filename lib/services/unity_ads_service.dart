@@ -9,10 +9,12 @@
 // Respect rules (blood-donation purpose):
 // - Rewarded is VOLUNTARY only: a "support the society" button in the
 //   Info tab. Never gates any feature, never blocks a critical flow.
-// - Interstitial is frequency-capped: at most once per 10 bottom-nav
-//   tab switches AND at least 5 minutes apart, and NEVER when the
-//   user is heading to the Directory (donor search) or Register
-//   (donor registration) tabs — those are critical flows.
+// - Interstitial is STRICTLY frequency-capped (Jaani, 3 Nov 2026):
+//   MAX 1 ad per visitor per 2 hours, persisted in SharedPreferences
+//   so it survives app restarts. NEVER when the user is heading to
+//   the Directory (donor search) or Register (donor registration)
+//   tabs — those are critical flows.
+//   USER COMFORT > REVENUE: when in doubt, show fewer ads.
 // - Every show is best-effort: a failed load/show is a silent no-op,
 //   never an error dialog, never a blocked navigation.
 //
@@ -21,6 +23,7 @@
 
 import 'dart:async';
 
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:unity_ads_plugin/unity_ads_plugin.dart';
 
 class UnityAdsService {
@@ -31,9 +34,10 @@ class UnityAdsService {
   /// Keep true while testing. Production builds set this to false.
   static const bool testMode = false;
 
-  /// MASTER AD KILL-SWITCH (Jaani, 2 Nov 2026): ALL Unity ads OFF for now.
-  /// Set to true when Jaani orders ads back (then max 1-2 per visit).
-  static const bool adsEnabled = false;
+  /// MASTER AD SWITCH (Jaani, 3 Nov 2026): Unity ads ON with STRICT
+  /// frequency cap — max 1 interstitial per visitor per 2 hours.
+  /// Set to false only on Jaani's explicit order to turn ads off.
+  static const bool adsEnabled = true;
 
   static bool _initialized = false;
   static bool _initFailed = false;
@@ -42,11 +46,42 @@ class UnityAdsService {
   static bool _rewardedLoading = false;
   static bool _interstitialLoading = false;
 
-  // ---- Interstitial frequency cap ----
-  static int _tabSwitchesSinceAd = 0;
+  // ---- Interstitial frequency cap (Jaani, 3 Nov 2026) ----
+  // STRICT: max 1 interstitial per visitor per 2 hours.
+  // Persisted in SharedPreferences so the cap survives app restarts.
+  // USER COMFORT > REVENUE: when in doubt, show fewer ads.
   static DateTime? _lastInterstitialAt;
-  static const int _switchesPerAd = 10;
-  static const Duration _minGap = Duration(minutes: 5);
+  static const Duration _minGap = Duration(hours: 2);
+  static const String _prefsKeyLastAd = 'unity_last_interstitial_at_ms';
+
+  /// Load the persisted cap state (last ad timestamp). Called once at
+  /// startup; never blocks, never throws.
+  static Future<void> _loadCapState() async {
+    try {
+      final prefs = await SharedPreferences.getInstance()
+          .timeout(const Duration(seconds: 5));
+      final millis = prefs.getInt(_prefsKeyLastAd);
+      if (millis != null && millis > 0) {
+        _lastInterstitialAt = DateTime.fromMillisecondsSinceEpoch(millis);
+      }
+    } catch (_) {
+      // Prefs unavailable: _lastInterstitialAt stays null.
+    }
+  }
+
+  /// Persist the last-ad timestamp. Fire-and-forget, never throws.
+  static Future<void> _saveCapState() async {
+    try {
+      final prefs = await SharedPreferences.getInstance()
+          .timeout(const Duration(seconds: 5));
+      final last = _lastInterstitialAt;
+      if (last != null) {
+        await prefs.setInt(_prefsKeyLastAd, last.millisecondsSinceEpoch);
+      }
+    } catch (_) {
+      // Silent: cap persistence is best-effort.
+    }
+  }
 
   /// Whether the SDK initialized successfully.
   static bool get isInitialized => _initialized;
@@ -58,6 +93,8 @@ class UnityAdsService {
     if (!adsEnabled) return;
     if (_initialized || _initFailed || _initStarted) return;
     _initStarted = true;
+    // Load persisted frequency-cap state (never blocks init).
+    unawaited(_loadCapState());
     try {
       final completer = Completer<void>();
       UnityAds.init(
@@ -198,7 +235,6 @@ class UnityAdsService {
       onDone();
       return;
     }
-    _tabSwitchesSinceAd++;
     if (targetIsCritical || !_capAllows()) {
       onDone();
       return;
@@ -208,7 +244,6 @@ class UnityAdsService {
 
   static bool _capAllows() {
     if (!_initialized) return false;
-    if (_tabSwitchesSinceAd < _switchesPerAd) return false;
     final last = _lastInterstitialAt;
     if (last != null &&
         DateTime.now().difference(last) < _minGap) {
@@ -230,8 +265,8 @@ class UnityAdsService {
       UnityAds.showVideoAd(
         placementId: interstitialPlacementId,
         onStart: (placementId) {
-          _tabSwitchesSinceAd = 0;
           _lastInterstitialAt = DateTime.now();
+          unawaited(_saveCapState());
         },
         onClick: (placementId) {},
         onSkipped: (placementId) {
