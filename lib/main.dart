@@ -127,6 +127,9 @@ class DonerApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      // Updater's global key (Jaani, 3 Nov 2026): the install prompt
+      // must appear even if the user navigated away mid-download.
+      navigatorKey: UpdateService.navigatorKey,
       title: 'Doner',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
