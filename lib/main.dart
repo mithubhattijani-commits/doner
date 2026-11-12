@@ -5285,7 +5285,7 @@ class AdvertisingBanner extends StatelessWidget {
             ],
           ),
 
-      ),
+    ),  ),
     ); }, );
   }
 }
