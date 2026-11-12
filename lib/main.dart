@@ -306,8 +306,25 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
         items.add(BottomNavigationBarItem(
             icon: const Icon(Icons.info), label: AppLanguage.isEnglish ? 'Info' : 'معلومات'));
         final index = _tab < tabs.length ? _tab : 0;
-        final showBanner =
-            tabs[index] is HomeTab || tabs[index] is DirectoryTab;
+        final Widget bannerSlot;
+                    if (tabs[index] is DirectoryTab) {
+                                bannerSlot = ValueListenableBuilder<String>(
+                                              valueListenable: DirectoryTab.levelNotifier,
+                                              builder: (BuildContext context, String level, _) {
+                                                              return ZonedUnityBanner(
+                                                                                zone: (ads) => level == 'donors' ? ads.bannerDonors : ads.bannerDirectory,
+                                                                              );
+                                              },
+                                            );
+                    } else if (tabs[index] is HomeTab) {
+                                bannerSlot = ZonedUnityBanner(zone: (ads) => ads.bannerHome);
+                    } else if (tabs[index] is SocialFeedTab) {
+                                bannerSlot = ZonedUnityBanner(zone: (ads) => ads.bannerFeed);
+                    } else if (tabs[index] is RegisterTab) {
+                                bannerSlot = ZonedUnityBanner(zone: (ads) => ads.bannerRegister);
+                    } else {
+                                bannerSlot = ZonedUnityBanner(zone: (ads) => ads.bannerInfo);
+                    }
         return Scaffold(
       appBar: AppBar(
         title: Text(
@@ -342,7 +359,7 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
             announcementBanner(config.announcementText),
           const UpdateProgressBanner(),
           Expanded(child: tabs[index]),
-          if (showBanner) const UnityBannerAdWidget(),
+          bannerSlot,
         ],
       ),
       bottomNavigationBar: BottomNavigationBar(
@@ -2480,6 +2497,12 @@ class _AuthScreenState extends State<AuthScreen>
 
 class DirectoryTab extends StatefulWidget {
   const DirectoryTab({super.key});
+    /// Current Directory level, kept in sync by the state so the HomeShell
+    /// banner slot can pick the per-zone key (banner_donors on the donor
+    /// list, banner_directory otherwise). Synced after the frame, so
+    /// listeners rebuild outside the build phase.
+    static final ValueNotifier<String> levelNotifier =
+            ValueNotifier<String>('provinces');
 
   @override
   State<DirectoryTab> createState() => _DirectoryTabState();
@@ -2703,6 +2726,11 @@ class _DirectoryTabState extends State<DirectoryTab> with WidgetsBindingObserver
 
   @override
   Widget build(BuildContext context) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (DirectoryTab.levelNotifier.value != _level) {
+                          DirectoryTab.levelNotifier.value = _level;
+                }
+        });
     return Column(
       children: [
         Padding(
@@ -3661,7 +3689,13 @@ class _RegisterTabState extends State<RegisterTab> {
           ),
         ),
         if (_mine.isNotEmpty) ...[
-          const _FeaturedBoostCard(),
+        ValueListenableBuilder<RemoteConfig>(
+                    valueListenable: remoteConfigService.notifier,
+                    builder: (BuildContext context, RemoteConfig config, _) {
+                                  if (!config.ads.rewardedEnabled) return const SizedBox.shrink();
+                                  return const _FeaturedBoostCard();
+                    },
+                  ),
           const SizedBox(height: 8),
         ],
         if (config.donorCard && _mine.isNotEmpty) ...[
@@ -4123,6 +4157,7 @@ class _AdminScreenState extends State<AdminScreen> {
           foregroundColor: Colors.white,
           centerTitle: true,
         ),
+        bottomNavigationBar: ZonedUnityBanner(zone: (ads) => ads.bannerInfo),
         body: Padding(
           padding: const EdgeInsets.all(16),
           child: Column(
@@ -4575,7 +4610,13 @@ Widget _languageCard() {
       ),
         const SizedBox(height: 8),
         // opt-in, never gates a feature, never blocks a critical flow.
-        const UnitySupportCard(),
+      ValueListenableBuilder<RemoteConfig>(
+                valueListenable: remoteConfigService.notifier,
+                builder: (BuildContext context, RemoteConfig config, _) {
+                            if (!config.ads.rewardedEnabled) return const SizedBox.shrink();
+                            return const UnitySupportCard();
+                },
+              ),
         const SizedBox(height: 20),
         // Help & Support: WhatsApp contact (Jaani Bhatti).
         Card(
@@ -5108,6 +5149,7 @@ class _EligibilityScreenState extends State<EligibilityScreen> {
         backgroundColor: const Color(0xFFC8102E),
         foregroundColor: Colors.white,
       ),
+      bottomNavigationBar: ZonedUnityBanner(zone: (ads) => ads.bannerRegister),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -5224,18 +5266,23 @@ class _UnitySupportCardState extends State<UnitySupportCard> {
       return;
     }
     setState(() => _busy = true);
-    final result = await UnityAdsService.showRewardedAd();
-    if (!mounted) return;
-    setState(() => _busy = false);
-    final msg = switch (result) {
-      UnityAdResult.completed =>
-        'جزاک اللہ! آپ کے تعاون کا شکریہ 🩸',
-      UnityAdResult.skipped =>
-        'اشتہار ادھورا رہ گیا — مکمل دیکھنے پر تعاون شمار ہوگا',
-      UnityAdResult.failed =>
-        'اشتہار نہیں چل سکا — دوبارہ کوشش کریں',
-    };
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    await UnityAdsService.showRewardedVideo(
+            onReward: () {
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('جزاک اللہ! آپ کے تعاون کا شکریہ')),
+                                );
+            },
+            onFail: () {
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('اشتہار مکمل نہیں ہوا — دوبارہ کوشش کریں')),
+                                );
+            },
+            onDone: () {
+                      if (mounted) setState(() => _busy = false);
+            },
+          );
   }
 
   @override
@@ -5392,29 +5439,25 @@ class _FeaturedBoostCardState extends State<_FeaturedBoostCard> {
       return;
     }
     setState(() => _busy = true);
-    final UnityAdResult result = await UnityAdsService.showRewardedAd();
-    if (!mounted) return;
-    setState(() => _busy = false);
-    if (result == UnityAdResult.completed) {
-      await FeaturedBoost.grant();
-      if (!mounted) return;
-      setState(() {});
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text(
-                '⭐ مبارک! آپ کا ڈونر پروفائل 7 دن تک ڈائریکٹری میں سب سے اوپر نمایاں رہے گا')),
-      );
-    } else if (result == UnityAdResult.skipped) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text('اشتہار ادھورا رہ گیا — مکمل دیکھنے پر Featured ملے گا')),
-      );
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text('اشتہار نہیں چل سکا — دوبارہ کوشش کریں')),
-      );
-    }
+    await UnityAdsService.showRewardedVideo(
+            onReward: () async {
+                      await FeaturedBoost.grant();
+                      if (!mounted) return;
+                      setState(() => {});
+                      ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('مبارک! آپ کا ڈونر پروفائل 7 دن تک ڈائریکٹری میں سب سے اوپر نمایاں رہے گا')),
+                                );
+            },
+            onFail: () {
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('اشتہار مکمل نہیں ہوا — دوبارہ کوشش کریں')),
+                                );
+            },
+            onDone: () {
+                      if (mounted) setState(() => _busy = false);
+            },
+          );
   }
 
   @override
