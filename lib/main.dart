@@ -68,6 +68,9 @@ import 'services/config_service.dart';
 import 'services/remote_config_service.dart';
 import 'services/unity_ads_service.dart';
 import 'services/update_service.dart';
+import 'incharge_donor_page.dart';
+import 'office_bearers_page.dart';
+import 'services/app_language.dart';
 import 'package:flutter/services.dart';
 
 // ---- Society's public contact (published on the website itself) ----
@@ -115,6 +118,7 @@ Future<void> main() async {
   await remoteConfigService.init();
   // Featured Donor boost state (7-day reward) — fast local read.
   await FeaturedBoost.refresh();
+  await AppLanguage.load();
   runApp(const DonerApp());
   // Launch fetch: refreshes content in the background. On any failure
   // the cached/default config stays in place (fail-soft, silent).
@@ -140,9 +144,9 @@ class DonerApp extends StatelessWidget {
         useMaterial3: true,
         fontFamily: null,
       ),
-      home: const Directionality(
-        textDirection: TextDirection.rtl,
-        child: HomeShell(),
+      home: ValueListenableBuilder<String>(
+        valueListenable: AppLanguage.notifier,
+        builder: (BuildContext context, String lang, _) { return Directionality(textDirection: lang == 'ur' ? TextDirection.rtl : TextDirection.ltr, child: const HomeShell()); },
       ),
     );
   }
@@ -155,17 +159,21 @@ class HomeShell extends StatefulWidget {
   State<HomeShell> createState() => _HomeShellState();
 }
 
-class _HomeShellState extends State<HomeShell> {
+class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
   int _tab = 0;
 
   /// Set the first time the force-update dialog shows: it appears at
   /// most once per app launch.
   bool _forceUpdateShown = false;
+  Timer? _refreshTimer;
 
   @override
   void initState() {
     super.initState();
     AdService.showAppOpenOnce();
+    WidgetsBinding.instance.addObserver(this);
+    AppLanguage.notifier.addListener(_onLanguageChanged);
+    _refreshTimer = Timer.periodic(const Duration(seconds: 60), (_) => _refreshWebsiteData());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) UpdateService.checkOnLaunch(context);
     });
@@ -180,6 +188,9 @@ class _HomeShellState extends State<HomeShell> {
   @override
   void dispose() {
     remoteConfigService.notifier.removeListener(_maybeShowForceUpdate);
+    _refreshTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    AppLanguage.notifier.removeListener(_onLanguageChanged);
     super.dispose();
   }
 
@@ -230,6 +241,23 @@ class _HomeShellState extends State<HomeShell> {
     } catch (_) {
       // Fail-soft: never crash on a version/config hiccup.
     }
+  }
+  /// Instant refresh (website control): re-fetch both remote configs every
+  /// 60 seconds and whenever the app comes back to the foreground, so the
+  /// website admin-panel changes reach the app within a minute. Both
+  /// refreshes are fail-soft - a network failure just keeps the last config.
+  void _refreshWebsiteData() {
+        remoteConfigService.refresh();
+    ConfigService.refresh();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+      if (state == AppLifecycleState.resumed) _refreshWebsiteData();
+  }
+
+  void _onLanguageChanged() {
+      if (mounted) setState(() {});
   }
 
   // Tabs are built dynamically in build() so features.directory=false
