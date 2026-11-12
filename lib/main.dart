@@ -314,7 +314,7 @@ class _HomeShellState extends State<HomeShell> {
             announcementBanner(config.announcementText),
           const UpdateProgressBanner(),
           Expanded(child: tabs[index]),
-          if (showBanner) const BannerAdWidget(),
+          if (showBanner) const UnityBannerAdWidget(),
         ],
       ),
       bottomNavigationBar: BottomNavigationBar(
