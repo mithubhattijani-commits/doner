@@ -15,9 +15,7 @@
 //   but Aman has no unlockable feature to gate behind a reward (Jaani
 //   confirmed 26 Oct 2026: revisit only if an unlock-worthy feature
 //   appears). No reward is invented here.
-// NOTE: the AdMob account is still under Google review; new units may
-// take up to an hour to show ads. Nothing here touches payment/payout
-// settings.
+// NOTE: the AdMob account was NOT approved on either Google account (mithu + ghulam, checked 12 Nov 2026), so all AdMob ads stay OFF until/unless an approved account exists.
 
 import 'dart:async';
 
@@ -46,6 +44,7 @@ class AdService {
   static bool _appOpenShownThisLaunch = false;
 
   static Future<void> init() async {
+    if (!adsEnabled) return;
     // ROOT-CAUSE FIX (Jaani, 2 Nov 2026): bounded init — a wedged
     // Play-services must never block app startup (ANR guard).
     try {
@@ -57,6 +56,7 @@ class AdService {
   }
 
   static void _load() {
+    if (!adsEnabled) return;
     if (_loading || _ad != null) return;
     _loading = true;
     InterstitialAd.load(
@@ -78,6 +78,7 @@ class AdService {
   /// Runs [action] after an interstitial (if one is loaded), or immediately
   /// when none is loaded. Never blocks [action] on ad failure.
   static void runWithAd(FutureOr<void> Function() action) {
+    if (!adsEnabled) { action(); return; }
     final ad = _ad;
     if (ad == null) {
       _load();
@@ -101,6 +102,7 @@ class AdService {
   }
 
   static void _loadAppOpen() {
+    if (!adsEnabled) return;
     if (_appOpenLoading || _appOpenAd != null) return;
     _appOpenLoading = true;
     AppOpenAd.load(
@@ -141,7 +143,6 @@ class AdService {
 /// never leaves a blank bar or covers any button.
 class BannerAdWidget extends StatefulWidget {
   const BannerAdWidget({super.key});
-
   @override
   State<BannerAdWidget> createState() => _BannerAdWidgetState();
 }
@@ -150,9 +151,11 @@ class _BannerAdWidgetState extends State<BannerAdWidget> {
   BannerAd? _bannerAd;
   bool _loaded = false;
 
+
   @override
   void initState() {
     super.initState();
+    if (!AdService.adsEnabled) return;
     _bannerAd = BannerAd(
       adUnitId: AdService.bannerUnitId,
       size: AdSize.banner,
@@ -191,7 +194,6 @@ class _BannerAdWidgetState extends State<BannerAdWidget> {
 /// never pretends to be a donor entry.
 class NativeAdWidget extends StatefulWidget {
   const NativeAdWidget({super.key});
-
   @override
   State<NativeAdWidget> createState() => _NativeAdWidgetState();
 }
@@ -200,9 +202,11 @@ class _NativeAdWidgetState extends State<NativeAdWidget> {
   NativeAd? _nativeAd;
   bool _loaded = false;
 
+
   @override
   void initState() {
     super.initState();
+    if (!AdService.adsEnabled) return;
     _nativeAd = NativeAd(
       adUnitId: AdService.nativeUnitId,
       factoryId: 'donerNative',
