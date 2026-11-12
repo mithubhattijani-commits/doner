@@ -4,7 +4,7 @@
 /// (moved 31 Oct 2026; the old doner-donor-society host is retired.)
 /// Contract (owned by the Worker, not this app):
 ///   GET  /api/donors        public: name/group/province/district/area/
-///                          address/ts only — NO phone, NO photo.
+///                          address/ts + photo (Worker v2) — NO phone.
 ///   POST /api/donors        name/phone/province/district/area/address/group
 ///                          (immediately public, phone never shown publicly).
 ///   GET  /api/feed          public, newest first.
@@ -28,6 +28,7 @@ import 'dart:io';
 
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../data.dart';
 
 /// Society API base (live, verified 31 Oct 2026).
 const String societyApiBase =
@@ -54,6 +55,7 @@ class PublicDonor {
     required this.district,
     required this.area,
     required this.address,
+      this.photo = '',
     required this.ts,
   });
 
@@ -63,6 +65,7 @@ class PublicDonor {
   final String district;
   final String area;
   final String address;
+    final String photo;
   final String ts;
 
   factory PublicDonor.fromJson(Map<String, dynamic> j) => PublicDonor(
@@ -73,6 +76,7 @@ class PublicDonor {
         area: _s(j['area']),
         address: _s(j['address']),
         ts: _s(j['ts'] ?? j['createdAt'] ?? j['date']),
+      photo: _s(j['photo'] ?? j['photoUrl'] ?? j['image']),
       );
 }
 
@@ -86,6 +90,7 @@ class AdminDonor extends PublicDonor {
     required super.area,
     required super.address,
     required super.ts,
+      super.photo,
     required this.phone,
   });
 
@@ -99,6 +104,7 @@ class AdminDonor extends PublicDonor {
         area: _s(j['area']),
         address: _s(j['address']),
         ts: _s(j['ts'] ?? j['createdAt'] ?? j['date']),
+      photo: _s(j['photo'] ?? j['photoUrl'] ?? j['image']),
         phone: _s(j['phone']),
       );
 }
