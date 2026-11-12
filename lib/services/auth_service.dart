@@ -39,6 +39,8 @@ class AuthUser {
     required this.phone,
     required this.group,
     required this.city,
+      this.role = '',
+      this.district = '',
   });
 
   final String name;
@@ -46,6 +48,8 @@ class AuthUser {
   final String phone;
   final String group;
   final String city;
+    final String role;
+    final String district;
 
   factory AuthUser.fromJson(Map<String, dynamic> j) => AuthUser(
         name: _s(j['name']),
@@ -53,6 +57,8 @@ class AuthUser {
         phone: _s(j['phone']),
         group: _s(j['group']),
         city: _s(j['city']),
+      role: _s(j['role']),
+      district: _s(j['district'] ?? j['city']),
       );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -61,6 +67,8 @@ class AuthUser {
         'phone': phone,
         'group': group,
         'city': city,
+      'role': role,
+      'district': district,
       };
 }
 
