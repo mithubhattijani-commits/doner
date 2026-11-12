@@ -18,11 +18,12 @@
 // - Every show is best-effort: a failed load/show is a silent no-op,
 //   never an error dialog, never a blocked navigation.
 //
-// Test mode is ON for development. Flip [testMode] to false for
-// production builds. Nothing here touches payment/payout settings.
+// Production mode: [testMode] is false, so real ads are served.
+// Nothing here touches payment/payout settings.
 
 import 'dart:async';
 
+import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:unity_ads_plugin/unity_ads_plugin.dart';
 
@@ -30,8 +31,9 @@ class UnityAdsService {
   static const String gameId = '800418043';
   static const String rewardedPlacementId = 'BP_Rewarded_Android';
   static const String interstitialPlacementId = 'BP_Interstitial_Android';
+  static const String bannerPlacementId = 'BP_Banner_Android';
 
-  /// Keep true while testing. Production builds set this to false.
+  /// Production mode (testMode = false): real ads are served.
   static const bool testMode = false;
 
   /// MASTER AD SWITCH (Jaani, 3 Nov 2026): Unity ads ON with STRICT
@@ -301,4 +303,46 @@ enum UnityAdResult {
 
   /// Ad failed to load or show.
   failed,
+}
+
+/// Unity banner at the bottom of home/directory (replaces the AdMob test banner).
+/// Renders nothing while the banner is loading or if it fails to load,
+/// so the page layout never leaves a permanent empty band.
+class UnityBannerAdWidget extends StatefulWidget {
+  const UnityBannerAdWidget({super.key});
+
+  @override
+  State<UnityBannerAdWidget> createState() => _UnityBannerAdWidgetState();
+}
+
+class _UnityBannerAdWidgetState extends State<UnityBannerAdWidget> {
+  bool _loaded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!UnityAdsService.adsEnabled) return const SizedBox.shrink();
+    // Single UnityBannerAd instance kept mounted (maintainState) so it
+    // loads once and never reloads on rebuild; Visibility only controls
+    // whether the loaded 50px banner takes space.
+    return Visibility(
+      visible: _loaded,
+      maintainState: true,
+      child: SizedBox(
+        height: 50,
+        child: Center(
+          child: UnityBannerAd(
+            placementId: UnityAdsService.bannerPlacementId,
+            onLoad: (placementId) {
+              if (mounted) setState(() => _loaded = true);
+            },
+            onClick: (placementId) {},
+            onShown: (placementId) {},
+            onFailed: (placementId, error, message) {
+              if (mounted) setState(() => _loaded = false);
+            },
+          ),
+        ),
+      ),
+    );
+  }
 }
