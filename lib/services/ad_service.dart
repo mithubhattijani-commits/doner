@@ -143,6 +143,7 @@ class AdService {
 /// never leaves a blank bar or covers any button.
 class BannerAdWidget extends StatefulWidget {
   const BannerAdWidget({super.key});
+
   @override
   State<BannerAdWidget> createState() => _BannerAdWidgetState();
 }
@@ -150,7 +151,6 @@ class BannerAdWidget extends StatefulWidget {
 class _BannerAdWidgetState extends State<BannerAdWidget> {
   BannerAd? _bannerAd;
   bool _loaded = false;
-
 
   @override
   void initState() {
@@ -194,6 +194,7 @@ class _BannerAdWidgetState extends State<BannerAdWidget> {
 /// never pretends to be a donor entry.
 class NativeAdWidget extends StatefulWidget {
   const NativeAdWidget({super.key});
+
   @override
   State<NativeAdWidget> createState() => _NativeAdWidgetState();
 }
@@ -201,7 +202,6 @@ class NativeAdWidget extends StatefulWidget {
 class _NativeAdWidgetState extends State<NativeAdWidget> {
   NativeAd? _nativeAd;
   bool _loaded = false;
-
 
   @override
   void initState() {
