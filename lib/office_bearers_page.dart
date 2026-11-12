@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import 'services/api_service.dart';
 import 'services/unity_ads_service.dart';
@@ -65,7 +65,7 @@ class _OfficeBearersPageState extends State<OfficeBearersPage> {
       return CircleAvatar(
         radius: size / 2,
         backgroundImage: NetworkImage(bearer.photo),
-        onBackgroundImageError: (_, __) {},
+        onBackgroundImageError: (_, _) {},
       );
     }
     return _initialAvatar(bearer, size);
@@ -128,7 +128,7 @@ class _OfficeBearersPageState extends State<OfficeBearersPage> {
                   child: ListView.separated(
                     padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
                     itemCount: _bearers.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 10),
+                    separatorBuilder: (_, _) => const SizedBox(height: 10),
                     itemBuilder: (BuildContext context, int index) {
                       final OfficeBearer bearer = _bearers[index];
                       return Card(
