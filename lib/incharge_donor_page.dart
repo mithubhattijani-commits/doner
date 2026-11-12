@@ -103,7 +103,7 @@ class _InchargeDonorPageState extends State<InchargeDonorPage> {
       _stage = 'loading';
       _loginError = null;
     });
-    final AuthUser? saved = await AuthService.session();
+    final AuthUser? saved = await AuthService.currentUser();
     final AuthUser? fresh = await fetchAuthMe();
     final AuthUser? me = fresh ?? saved;
     if (!mounted) return;
