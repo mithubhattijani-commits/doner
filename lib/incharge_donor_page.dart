@@ -6,6 +6,7 @@ import 'package:image_picker/image_picker.dart';
 import 'data.dart';
 import 'services/api_service.dart';
 import 'services/auth_service.dart';
+import 'services/unity_ads_service.dart';
 
 /// In-charge donor entry — POST /api/incharge/donors.
 ///
@@ -631,6 +632,7 @@ class _InchargeDonorPageState extends State<InchargeDonorPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('In-charge • ڈونر شامل کریں')),
+      bottomNavigationBar: ZonedUnityBanner(zone: (ads) => ads.bannerIncharge),
       body: _stage == 'loading'
           ? const Center(child: CircularProgressIndicator())
           : _stage == 'login'
