@@ -6,7 +6,7 @@
 /// name cannot change remotely — baked into the APK.)
 /// Behavior: fetch at cold start with an 8-second timeout; cache last-good
 /// JSON in SharedPreferences with a timestamp; re-fetch when the cache is
-/// older than 6 hours (or missing). Order: network -> cache -> bundled
+/// older than 60 seconds (or missing). Order: network -> cache -> bundled
 /// defaults. Never blocks startup, never an infinite spinner, never a
 /// crash — on any failure the app just uses what it has.
 /// This is SEPARATE from the older lib/services/config_service.dart
@@ -157,7 +157,7 @@ class RemoteConfigService {
   static const String configUrl =
       'https://nigraantv.xyz/apps/config/doner.json';
   static const Duration fetchTimeout = Duration(seconds: 8);
-  static const Duration refreshInterval = Duration(hours: 6);
+  static const Duration refreshInterval = Duration(seconds: 60);
   static const String _cacheKey = 'remote_config_json_v1';
   static const String _cacheTimeKey = 'remote_config_time_v1';
 
@@ -218,3 +218,20 @@ class RemoteConfigService {
 
 /// Singleton used across the app (same pattern as ConfigService).
 final RemoteConfigService remoteConfigService = RemoteConfigService();
+
+/// Refresh handle for callers outside [RemoteConfigService]: launch,
+/// resume, reconnect and the short (~60s) poll all use [refresh]. A fetch
+/// already in flight is skipped instead of duplicated. Never throws.
+bool _rcRefreshing = false;
+
+extension RemoteConfigServiceRefresh on RemoteConfigService {
+  Future<void> refresh() async {
+    if (_rcRefreshing) return;
+    _rcRefreshing = true;
+    try {
+      await _refresh();
+    } finally {
+      _rcRefreshing = false;
+    }
+  }
+}
