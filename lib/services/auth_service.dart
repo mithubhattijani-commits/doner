@@ -39,6 +39,8 @@ class AuthUser {
     required this.phone,
     required this.group,
     required this.city,
+      this.role = '',
+      this.district = '',
   });
 
   final String name;
@@ -46,6 +48,8 @@ class AuthUser {
   final String phone;
   final String group;
   final String city;
+    final String role;
+    final String district;
 
   factory AuthUser.fromJson(Map<String, dynamic> j) => AuthUser(
         name: _s(j['name']),
@@ -53,6 +57,8 @@ class AuthUser {
         phone: _s(j['phone']),
         group: _s(j['group']),
         city: _s(j['city']),
+      role: _s(j['role']),
+      district: _s(j['district'] ?? j['city']),
       );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -61,6 +67,8 @@ class AuthUser {
         'phone': phone,
         'group': group,
         'city': city,
+      'role': role,
+      'district': district,
       };
 }
 
@@ -226,4 +234,43 @@ class AuthService {
   /// True when a token is stored. The backend is the final judge on
   /// each call; an expired token surfaces there as 'لاگ اِن ضروری ہے'.
   static Future<bool> isLoggedIn() async => await authToken() != null;
+}
+
+/// Loads the signed-in account's role + district from GET /api/auth/me
+/// (Authorization: Bearer <token>). Returns null when there is no token or
+/// the call fails. Accepts both `{ok:true, user:{...}}` and a bare user
+/// object, and role/district at the top level or inside `user`. On success
+/// the saved session is refreshed (token unchanged) so the in-charge
+/// screens can read the district without another call. Never throws.
+Future<AuthUser?> fetchAuthMe() async {
+  final String? token = await AuthService.authToken();
+  if (token == null || token.isEmpty) return null;
+  HttpClient? client;
+  try {
+    client = HttpClient()..connectionTimeout = const Duration(seconds: 15);
+    final HttpClientRequest request =
+        await client.getUrl(Uri.parse('$authApiBase/api/auth/me'));
+    request.headers
+      ..set('Authorization', 'Bearer $token')
+      ..set('Accept', 'application/json');
+    final HttpClientResponse response =
+        await request.close().timeout(const Duration(seconds: 20));
+    final String body = await response.transform(utf8.decoder).join();
+    if (response.statusCode != HttpStatus.ok) return null;
+    final Map<String, dynamic> data =
+        jsonDecode(body) as Map<String, dynamic>;
+    final Map<String, dynamic> user =
+        (data['user'] as Map?)?.cast<String, dynamic>() ?? data;
+    final Map<String, dynamic> merged = Map<String, dynamic>.of(user);
+    merged['role'] ??= data['role'];
+    merged['district'] ??= data['district'];
+    final AuthUser me = AuthUser.fromJson(merged);
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kUser, jsonEncode(me.toJson()));
+    return me;
+  } catch (_) {
+    return null;
+  } finally {
+    client?.close(force: true);
+  }
 }

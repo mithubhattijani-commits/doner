@@ -68,6 +68,9 @@ import 'services/config_service.dart';
 import 'services/remote_config_service.dart';
 import 'services/unity_ads_service.dart';
 import 'services/update_service.dart';
+import 'incharge_donor_page.dart';
+import 'office_bearers_page.dart';
+import 'services/app_language.dart';
 import 'package:flutter/services.dart';
 
 // ---- Society's public contact (published on the website itself) ----
@@ -115,6 +118,7 @@ Future<void> main() async {
   await remoteConfigService.init();
   // Featured Donor boost state (7-day reward) — fast local read.
   await FeaturedBoost.refresh();
+  await AppLanguage.load();
   runApp(const DonerApp());
   // Launch fetch: refreshes content in the background. On any failure
   // the cached/default config stays in place (fail-soft, silent).
@@ -140,9 +144,9 @@ class DonerApp extends StatelessWidget {
         useMaterial3: true,
         fontFamily: null,
       ),
-      home: const Directionality(
-        textDirection: TextDirection.rtl,
-        child: HomeShell(),
+      home: ValueListenableBuilder<String>(
+        valueListenable: AppLanguage.notifier,
+        builder: (BuildContext context, String lang, _) { return Directionality(textDirection: lang == 'ur' ? TextDirection.rtl : TextDirection.ltr, child: const HomeShell()); },
       ),
     );
   }
@@ -155,17 +159,21 @@ class HomeShell extends StatefulWidget {
   State<HomeShell> createState() => _HomeShellState();
 }
 
-class _HomeShellState extends State<HomeShell> {
+class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
   int _tab = 0;
 
   /// Set the first time the force-update dialog shows: it appears at
   /// most once per app launch.
   bool _forceUpdateShown = false;
+  Timer? _refreshTimer;
 
   @override
   void initState() {
     super.initState();
     AdService.showAppOpenOnce();
+    WidgetsBinding.instance.addObserver(this);
+    AppLanguage.notifier.addListener(_onLanguageChanged);
+    _refreshTimer = Timer.periodic(const Duration(seconds: 60), (_) => _refreshWebsiteData());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) UpdateService.checkOnLaunch(context);
     });
@@ -180,6 +188,9 @@ class _HomeShellState extends State<HomeShell> {
   @override
   void dispose() {
     remoteConfigService.notifier.removeListener(_maybeShowForceUpdate);
+    _refreshTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    AppLanguage.notifier.removeListener(_onLanguageChanged);
     super.dispose();
   }
 
@@ -231,6 +242,23 @@ class _HomeShellState extends State<HomeShell> {
       // Fail-soft: never crash on a version/config hiccup.
     }
   }
+  /// Instant refresh (website control): re-fetch both remote configs every
+  /// 60 seconds and whenever the app comes back to the foreground, so the
+  /// website admin-panel changes reach the app within a minute. Both
+  /// refreshes are fail-soft - a network failure just keeps the last config.
+  void _refreshWebsiteData() {
+        remoteConfigService.refresh();
+    ConfigService.refresh();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+      if (state == AppLifecycleState.resumed) _refreshWebsiteData();
+  }
+
+  void _onLanguageChanged() {
+      if (mounted) setState(() {});
+  }
 
   // Tabs are built dynamically in build() so features.directory=false
   // hides the Directory tab instead of leaving a dead section.
@@ -261,25 +289,42 @@ class _HomeShellState extends State<HomeShell> {
           builder: (context, config, _) {
             final tabs = <Widget>[const HomeTab()];
         final items = <BottomNavigationBarItem>[
-          const BottomNavigationBarItem(icon: Icon(Icons.home), label: 'ہوم'),
+          BottomNavigationBarItem(icon: const Icon(Icons.home), label: AppLanguage.isEnglish ? 'Home' : 'ہوم'),
         ];
         tabs.add(const SocialFeedTab());
-        items.add(const BottomNavigationBarItem(
-            icon: Icon(Icons.dynamic_feed), label: 'سوشل فیڈ'));
+        items.add(BottomNavigationBarItem(
+            icon: const Icon(Icons.dynamic_feed), label: AppLanguage.isEnglish ? 'Social Feed' : 'سوشل فیڈ'));
         if (config.directory) {
           tabs.add(const DirectoryTab());
-          items.add(const BottomNavigationBarItem(
-              icon: Icon(Icons.search), label: 'ڈائریکٹری'));
+          items.add(BottomNavigationBarItem(
+              icon: const Icon(Icons.search), label: AppLanguage.isEnglish ? 'Directory' : 'ڈائیریکٹری'));
         }
         tabs.add(const RegisterTab());
-        items.add(const BottomNavigationBarItem(
-            icon: Icon(Icons.person_add), label: 'ڈونر بنیں'));
+        items.add(BottomNavigationBarItem(
+            icon: const Icon(Icons.person_add), label: AppLanguage.isEnglish ? 'Become a Donor' : 'ڈونر بنیں'));
         tabs.add(const InfoTab());
-        items.add(const BottomNavigationBarItem(
-            icon: Icon(Icons.info), label: 'معلومات'));
+        items.add(BottomNavigationBarItem(
+            icon: const Icon(Icons.info), label: AppLanguage.isEnglish ? 'Info' : 'معلومات'));
         final index = _tab < tabs.length ? _tab : 0;
-        final showBanner =
-            tabs[index] is HomeTab || tabs[index] is DirectoryTab;
+        final Widget bannerSlot;
+                    if (tabs[index] is DirectoryTab) {
+                                bannerSlot = ValueListenableBuilder<String>(
+                                              valueListenable: DirectoryTab.levelNotifier,
+                                              builder: (BuildContext context, String level, _) {
+                                                              return ZonedUnityBanner(
+                                                                                zone: (ads) => level == 'donors' ? ads.bannerDonors : ads.bannerDirectory,
+                                                                              );
+                                              },
+                                            );
+                    } else if (tabs[index] is HomeTab) {
+                                bannerSlot = ZonedUnityBanner(zone: (ads) => ads.bannerHome);
+                    } else if (tabs[index] is SocialFeedTab) {
+                                bannerSlot = ZonedUnityBanner(zone: (ads) => ads.bannerFeed);
+                    } else if (tabs[index] is RegisterTab) {
+                                bannerSlot = ZonedUnityBanner(zone: (ads) => ads.bannerRegister);
+                    } else {
+                                bannerSlot = ZonedUnityBanner(zone: (ads) => ads.bannerInfo);
+                    }
         return Scaffold(
       appBar: AppBar(
         title: Text(
@@ -314,7 +359,7 @@ class _HomeShellState extends State<HomeShell> {
             announcementBanner(config.announcementText),
           const UpdateProgressBanner(),
           Expanded(child: tabs[index]),
-          if (showBanner) const UnityBannerAdWidget(),
+          bannerSlot,
         ],
       ),
       bottomNavigationBar: BottomNavigationBar(
@@ -682,7 +727,7 @@ class HomeTab extends StatefulWidget {
   State<HomeTab> createState() => _HomeTabState();
 }
 
-class _HomeTabState extends State<HomeTab> {
+class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   String? _patientGroup;
   List<FeedPost> _feed = [];
   bool _feedLoading = false;
@@ -690,13 +735,26 @@ class _HomeTabState extends State<HomeTab> {
 
   /// SOS urgent requests, stored on-device in SharedPreferences.
   List<SosRequest> _sos = [];
+  Timer? _pollTimer;
   bool _sosLoaded = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _pollTimer = Timer.periodic(const Duration(seconds: 60), (_) => _loadFeed());
     _loadFeed();
     _loadSos();
+  }
+  @override
+  void dispose() {
+      _pollTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+      if (state == AppLifecycleState.resumed) _loadFeed();
   }
 
   Future<void> _loadSos() async {
@@ -1452,16 +1510,29 @@ class SocialFeedTab extends StatefulWidget {
   State<SocialFeedTab> createState() => _SocialFeedTabState();
 }
 
-class _SocialFeedTabState extends State<SocialFeedTab> {
+class _SocialFeedTabState extends State<SocialFeedTab> with WidgetsBindingObserver {
   List<SocialPost> _posts = [];
   bool _loading = false;
   String? _error;
   String? _likingId;
+  Timer? _pollTimer;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _pollTimer = Timer.periodic(const Duration(seconds: 60), (_) => _load());
     _load();
+  }
+  @override
+  void dispose() {
+      _pollTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+      if (state == AppLifecycleState.resumed) _load();
   }
 
   Future<void> _load() async {
@@ -2426,17 +2497,31 @@ class _AuthScreenState extends State<AuthScreen>
 
 class DirectoryTab extends StatefulWidget {
   const DirectoryTab({super.key});
+    /// Current Directory level, kept in sync by the state so the HomeShell
+    /// banner slot can pick the per-zone key (banner_donors on the donor
+    /// list, banner_directory otherwise). Synced after the frame, so
+    /// listeners rebuild outside the build phase.
+    static final ValueNotifier<String> levelNotifier =
+            ValueNotifier<String>('provinces');
 
   @override
   State<DirectoryTab> createState() => _DirectoryTabState();
 }
 
-class _DirectoryTabState extends State<DirectoryTab> {
+class _DirectoryTabState extends State<DirectoryTab> with WidgetsBindingObserver {
   String _level = 'provinces'; // provinces | districts | areas | donors
   String? _province;
   String? _district;
   String? _area;
   String _query = '';
+  // District in-charge (public card: photo + name + designation, never a
+  // phone number) and the areas the LIVE donor list knows about, so a
+  // district whose areas were never shipped still shows its donors.
+  DistrictIncharge? _incharge;
+  bool _inchargeLoading = false;
+  String? _inchargeFor;
+  List<String> _liveAreas = <String>[];
+  Timer? _pollTimer;
 
   /// Blood-group filter for the donor list. Emergencies are about the
   /// RIGHT group, not the whole list — null means "all groups".
@@ -2452,6 +2537,140 @@ class _DirectoryTabState extends State<DirectoryTab> {
 
   String get _areaKey => '$_province|$_district|$_area';
 
+  @override
+  void initState() {
+        super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _pollTimer = Timer.periodic(const Duration(seconds: 60), (_) => _refreshLiveData());}
+
+  @override
+  void dispose() {
+        _pollTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();}
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+        if (state == AppLifecycleState.resumed) _refreshLiveData();}
+
+  /// Re-fetch what the website panel may have changed: the in-charge card
+  /// and the live area list while an areas list is open, or the live donors
+  /// of the area currently shown. Silent — nothing flashes on failure.
+  void _refreshLiveData() {
+          if (!mounted) return;
+    if (_level == 'areas' && _district != null) {
+              _loadIncharge(_district!);
+      _loadDistrictAreas(_district!);
+    } else if (_level == 'donors' && _area != null) {
+      _liveCache.remove(_areaKey);
+      _liveRequested.remove(_areaKey);
+      if (mounted) setState(() {});
+  }
+  }
+
+    /// Load the in-charge card for [district] from the Worker. Silent on
+  /// failure (the card just stays hidden).
+  Future<void> _loadIncharge(String district) async {
+        if (_inchargeLoading) return;
+    if (_inchargeFor != district) {
+            _incharge = null;
+      _inchargeFor = district;
+      if (mounted) setState(() {});
+    }
+    _inchargeLoading = true;
+    final DistrictIncharge? got = await InchargeApi.fetchIncharge(district);
+    if (!mounted) return;
+    _inchargeLoading = false;
+    if (_inchargeFor == district) {
+              _incharge = got;
+      setState(() {});
+    }
+  }
+
+    /// Areas the LIVE donor list knows for [district] (the Worker returns all
+  /// public donors; this collects their distinct areas). Lets a district
+  /// whose areas the app never shipped still show its real donors.
+  Future<void> _loadDistrictAreas(String district) async {
+        final ApiResult<List<PublicDonor>> r = await ApiService.fetchPublicDonors();
+    if (!mounted) return;
+    if (_district != district) return;
+    final List<String> found = <String>[];
+    if (r.ok && r.data != null) {
+            for (final PublicDonor d in r.data!) {
+                      if (d.province == _province && d.district == district && d.area.isNotEmpty && !found.contains(d.area)) found.add(d.area);
+            }
+    }
+    _liveAreas = found;
+    setState(() {});
+  }
+
+
+    /// In-charge photo (data URI / http / raw base64) or the first letter.
+    Widget _inchargePhoto(DistrictIncharge ic) {
+          final Widget fallback = Container(
+                  width: 52,
+                  height: 52,
+                  color: const Color(0xFFC8102E),
+                  alignment: Alignment.center,
+                  child: Text(ic.name.isNotEmpty ? ic.name[0] : '-', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 22)),
+                );
+          final String p = ic.photo;
+          if (p.isEmpty) return ClipOval(child: fallback);
+          try {
+                  if (p.startsWith('data:image')) {
+                            return ClipOval(child: Image.memory(base64Decode(p.split(',').last), width: 52, height: 52, fit: BoxFit.cover));
+                  }
+                  if (p.startsWith('http')) {
+                            return ClipOval(child: Image.network(p, width: 52, height: 52, fit: BoxFit.cover, errorBuilder: (_, _, _) => fallback));
+                  }
+                  return ClipOval(child: Image.memory(base64Decode(p), width: 52, height: 52, fit: BoxFit.cover));
+          } catch (_) {
+                  return ClipOval(child: fallback);
+          }
+    }
+  
+    /// Public in-charge card: photo + name + designation. Never a phone.
+    Widget _inchargeCard() {
+          if (_inchargeLoading && _incharge == null) {
+                  return const Card(
+                            child: Padding(
+                                        padding: EdgeInsets.all(12),
+                                        child: Row(
+                                                      children: [
+                                                                      SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
+                                                                      SizedBox(width: 12),
+                                                                      Expanded(child: Text('انچارج کی معلومات لوڈ ہو رہی ہیں...')),
+                                                                    ],
+                                                    ),
+                                      ),
+                          );
+          }
+          final DistrictIncharge? ic = _incharge;
+          if (ic == null) return const SizedBox.shrink();
+          return Card(
+                  color: const Color(0xFFE8F5E9),
+                  child: Padding(
+                            padding: const EdgeInsets.all(12),
+                            child: Row(
+                                        children: [
+                                                      _inchargePhoto(ic),
+                                                      const SizedBox(width: 12),
+                                                      Expanded(
+                                                                      child: Column(
+                                                                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                                                                        children: [
+                                                                                                            Text(ic.name, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
+                                                                                                            Text(ic.designation.isNotEmpty ? ic.designation : 'ضلعی انچارج', style: const TextStyle(fontSize: 13)),
+                                                                                                            Text('$_district - ضلعی انچارج', style: const TextStyle(fontSize: 12, color: Colors.black54)),
+                                                                                                          ],
+                                                                                      ),
+                                                                    ),
+                                                    ],
+                                      ),
+                          ),
+                );
+    }
+  
   Future<void> _loadLive(String key, String province, String district,
       String area) async {
     if (_liveLoading.contains(key)) return;
@@ -2507,6 +2726,11 @@ class _DirectoryTabState extends State<DirectoryTab> {
 
   @override
   Widget build(BuildContext context) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (DirectoryTab.levelNotifier.value != _level) {
+                          DirectoryTab.levelNotifier.value = _level;
+                }
+        });
     return Column(
       children: [
         Padding(
@@ -2543,6 +2767,8 @@ class _DirectoryTabState extends State<DirectoryTab> {
                 _level = 'areas';
                 _query = '';
               });
+              _loadIncharge(d);
+              _loadDistrictAreas(d);
             }),
           ));
         }
@@ -2664,6 +2890,8 @@ class _DirectoryTabState extends State<DirectoryTab> {
                       _area = null;
                       _level = 'areas';
                     });
+                    _loadIncharge(d);
+                    _loadDistrictAreas(d);
                   }),
                 ),
               )).toList()),
@@ -2671,16 +2899,19 @@ class _DirectoryTabState extends State<DirectoryTab> {
       );
     } else if (_level == 'areas') {
       final known = areas[_district!] ?? const <String>[];
+      final List<String> allAreas = <String>[...known, ..._liveAreas.where((a) => !known.contains(a))];
       body = ListView(
         padding: const EdgeInsets.all(16),
         children: [
           _crumbs(),
           const SizedBox(height: 12),
+          _inchargeCard(),
+          const SizedBox(height: 8),
           Text('$_district — علاقہ منتخب کریں:',
               style:
                   const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
           const SizedBox(height: 8),
-          if (known.isEmpty)
+          if (allAreas.isEmpty)
             const Card(
               child: Padding(
                 padding: EdgeInsets.all(16),
@@ -2689,7 +2920,7 @@ class _DirectoryTabState extends State<DirectoryTab> {
               ),
             )
           else
-            ...withNativeAds(known.map((a) => Card(
+            ...withNativeAds(allAreas.map((a) => Card(
                   child: ListTile(
                     title: Text(a,
                         style: const TextStyle(fontWeight: FontWeight.w700)),
@@ -2777,6 +3008,33 @@ class _DirectoryTabState extends State<DirectoryTab> {
       } else {
         shown = base;
       }
+
+      
+        /// Donor photo (data URI / http / raw base64) or the blood-group avatar.
+        Widget donorAvatar(PublicDonor d) {
+              final Widget fallback = CircleAvatar(
+                      backgroundColor: const Color(0xFFC8102E),
+                      foregroundColor: Colors.white,
+                      child: Directionality(
+                                textDirection: TextDirection.ltr,
+                                  child: Text(d.group, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 13)),
+                                ),
+                      );
+              final String p = d.photo;
+              if (p.isEmpty) return fallback;
+              try {
+                      if (p.startsWith('data:image')) {
+                                return ClipOval(child: Image.memory(base64Decode(p.split(',').last), width: 44, height: 44, fit: BoxFit.cover));
+                      }
+                      if (p.startsWith('http')) {
+                                return ClipOval(child: Image.network(p, width: 44, height: 44, fit: BoxFit.cover, errorBuilder: (_, _, _) => fallback));
+                      }
+                      return ClipOval(child: Image.memory(base64Decode(p), width: 44, height: 44, fit: BoxFit.cover));
+              } catch (_) {
+                      return fallback;
+              }
+        }
+      
       return Column(
         children: [
           _groupFilterRow(donors),
@@ -2797,16 +3055,7 @@ class _DirectoryTabState extends State<DirectoryTab> {
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      CircleAvatar(
-                        backgroundColor: const Color(0xFFC8102E),
-                        foregroundColor: Colors.white,
-                        child: Directionality(
-                          textDirection: TextDirection.ltr,
-                          child: Text(d.group,
-                              style: const TextStyle(
-                                  fontWeight: FontWeight.w900, fontSize: 13)),
-                        ),
-                      ),
+                      donorAvatar(d),
                       const SizedBox(width: 10),
                       Expanded(
                         child: Column(
@@ -3440,7 +3689,13 @@ class _RegisterTabState extends State<RegisterTab> {
           ),
         ),
         if (_mine.isNotEmpty) ...[
-          const _FeaturedBoostCard(),
+        ValueListenableBuilder<RemoteConfig>(
+                    valueListenable: remoteConfigService.notifier,
+                    builder: (BuildContext context, RemoteConfig config, _) {
+                                  if (!config.ads.rewardedEnabled) return const SizedBox.shrink();
+                                  return const _FeaturedBoostCard();
+                    },
+                  ),
           const SizedBox(height: 8),
         ],
         if (config.donorCard && _mine.isNotEmpty) ...[
@@ -3902,6 +4157,7 @@ class _AdminScreenState extends State<AdminScreen> {
           foregroundColor: Colors.white,
           centerTitle: true,
         ),
+        bottomNavigationBar: ZonedUnityBanner(zone: (ads) => ads.bannerInfo),
         body: Padding(
           padding: const EdgeInsets.all(16),
           child: Column(
@@ -4185,6 +4441,31 @@ class _InfoTabState extends State<InfoTab> {
       ),
     );
   }
+/// Language switcher: English is the default, Urdu second. The choice
+/// is persisted and applies immediately (HomeShell listens); it also
+/// survives restarts because main() loads it before runApp().
+Widget _languageCard() {
+      final bool en = AppLanguage.isEnglish;
+  return Card(
+      color: const Color(0xFFFFF3E0),
+    child: ListTile(
+      leading: const Icon(Icons.language, color: Color(0xFFC8102E), size: 32),
+    title: const Text('زبان / Language', style: TextStyle(fontWeight: FontWeight.w900)),
+    subtitle: Text(en ? 'English - اردو دستیاب ہے' : 'اردو - English available'),
+      trailing: DropdownButton<String>(
+          value: AppLanguage.code,
+        items: const [
+            DropdownMenuItem(value: 'en', child: Text('English')),
+          DropdownMenuItem(value: 'ur', child: Text('اردو')),
+      ],
+        onChanged: (String? value) {
+                      if (value != null) AppLanguage.setLanguage(value);
+    },
+    ),
+  ),
+);
+}
+    
 
   @override
   Widget build(BuildContext context) {
@@ -4195,6 +4476,8 @@ class _InfoTabState extends State<InfoTab> {
       padding: const EdgeInsets.all(16),
       children: [
         _accountCard(),
+        const SizedBox(height: 8),
+        _languageCard(),
         const SizedBox(height: 8),
         sectionTitle('🩸 میرا عطیہ ریکارڈ'),
         _donationTrackerCard(),
@@ -4306,8 +4589,34 @@ class _InfoTabState extends State<InfoTab> {
         ...config.faq.map((f) => _infoCard('؟', f.q, f.a)),
         const SizedBox(height: 20),
         // Voluntary Unity rewarded ad: "support the society". Purely
+        Card(
+            child: ListTile(
+                leading: const Icon(Icons.people, color: Color(0xFFC8102E)),
+              title: const Text('عہدیداران کی فہرست', style: TextStyle(fontWeight: FontWeight.w900)),
+              subtitle: const Text('Office Bearers — all posts, live from the server'),
+              trailing: const Icon(Icons.arrow_back_ios, size: 16),
+              onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const OfficeBearersPage())),
+          ),
+      ),
+        const SizedBox(height: 8),
+        Card(
+            child: ListTile(
+                leading: const Icon(Icons.badge, color: Color(0xFFC8102E)),
+              title: const Text('انچارج — ڈونر شامل کریں', style: TextStyle(fontWeight: FontWeight.w900)),
+              subtitle: const Text('In-charge login: add donors for your own district'),
+              trailing: const Icon(Icons.arrow_back_ios, size: 16),
+              onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const InchargeDonorPage())),
+          ),
+      ),
+        const SizedBox(height: 8),
         // opt-in, never gates a feature, never blocks a critical flow.
-        const UnitySupportCard(),
+      ValueListenableBuilder<RemoteConfig>(
+                valueListenable: remoteConfigService.notifier,
+                builder: (BuildContext context, RemoteConfig config, _) {
+                            if (!config.ads.rewardedEnabled) return const SizedBox.shrink();
+                            return const UnitySupportCard();
+                },
+              ),
         const SizedBox(height: 20),
         // Help & Support: WhatsApp contact (Jaani Bhatti).
         Card(
@@ -4840,6 +5149,7 @@ class _EligibilityScreenState extends State<EligibilityScreen> {
         backgroundColor: const Color(0xFFC8102E),
         foregroundColor: Colors.white,
       ),
+      bottomNavigationBar: ZonedUnityBanner(zone: (ads) => ads.bannerRegister),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -4956,18 +5266,23 @@ class _UnitySupportCardState extends State<UnitySupportCard> {
       return;
     }
     setState(() => _busy = true);
-    final result = await UnityAdsService.showRewardedAd();
-    if (!mounted) return;
-    setState(() => _busy = false);
-    final msg = switch (result) {
-      UnityAdResult.completed =>
-        'جزاک اللہ! آپ کے تعاون کا شکریہ 🩸',
-      UnityAdResult.skipped =>
-        'اشتہار ادھورا رہ گیا — مکمل دیکھنے پر تعاون شمار ہوگا',
-      UnityAdResult.failed =>
-        'اشتہار نہیں چل سکا — دوبارہ کوشش کریں',
-    };
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    await UnityAdsService.showRewardedVideo(
+            onReward: () {
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('جزاک اللہ! آپ کے تعاون کا شکریہ')),
+                                );
+            },
+            onFail: () {
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('اشتہار مکمل نہیں ہوا — دوبارہ کوشش کریں')),
+                                );
+            },
+            onDone: () {
+                      if (mounted) setState(() => _busy = false);
+            },
+          );
   }
 
   @override
@@ -5124,29 +5439,25 @@ class _FeaturedBoostCardState extends State<_FeaturedBoostCard> {
       return;
     }
     setState(() => _busy = true);
-    final UnityAdResult result = await UnityAdsService.showRewardedAd();
-    if (!mounted) return;
-    setState(() => _busy = false);
-    if (result == UnityAdResult.completed) {
-      await FeaturedBoost.grant();
-      if (!mounted) return;
-      setState(() {});
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text(
-                '⭐ مبارک! آپ کا ڈونر پروفائل 7 دن تک ڈائریکٹری میں سب سے اوپر نمایاں رہے گا')),
-      );
-    } else if (result == UnityAdResult.skipped) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text('اشتہار ادھورا رہ گیا — مکمل دیکھنے پر Featured ملے گا')),
-      );
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text('اشتہار نہیں چل سکا — دوبارہ کوشش کریں')),
-      );
-    }
+    await UnityAdsService.showRewardedVideo(
+            onReward: () async {
+                      await FeaturedBoost.grant();
+                      if (!mounted) return;
+                      setState(() => {});
+                      ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('مبارک! آپ کا ڈونر پروفائل 7 دن تک ڈائریکٹری میں سب سے اوپر نمایاں رہے گا')),
+                                );
+            },
+            onFail: () {
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('اشتہار مکمل نہیں ہوا — دوبارہ کوشش کریں')),
+                                );
+            },
+            onDone: () {
+                      if (mounted) setState(() => _busy = false);
+            },
+          );
   }
 
   @override

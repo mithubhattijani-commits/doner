@@ -6,7 +6,7 @@
 /// name cannot change remotely — baked into the APK.)
 /// Behavior: fetch at cold start with an 8-second timeout; cache last-good
 /// JSON in SharedPreferences with a timestamp; re-fetch when the cache is
-/// older than 6 hours (or missing). Order: network -> cache -> bundled
+/// older than 60 seconds (or missing). Order: network -> cache -> bundled
 /// defaults. Never blocks startup, never an infinite spinner, never a
 /// crash — on any failure the app just uses what it has.
 /// This is SEPARATE from the older lib/services/config_service.dart
@@ -99,7 +99,49 @@ class AdvertisingBannerConfig {
       );
 }
 
-class RemoteConfig {
+
+/// Per-zone ad ON/OFF switches from the website admin panel (doner.json
+/// "ads" object). Every zone defaults to true (fail-open): a missing key or
+/// an older config never hides an ad. When a zone is false its banner slot
+/// renders nothing (zero height); when rewarded_enabled is false the opt-in
+/// rewarded buttons stay hidden and the rewarded helper no-ops.
+class AdsConfig {
+    const AdsConfig({
+          this.bannerHome = true,
+          this.bannerDirectory = true,
+          this.bannerDonors = true,
+          this.bannerRegister = true,
+          this.bannerFeed = true,
+          this.bannerInfo = true,
+          this.bannerOfficeBearers = true,
+          this.bannerIncharge = true,
+          this.rewardedEnabled = true,
+    });
+    final bool bannerHome;
+    final bool bannerDirectory;
+    final bool bannerDonors;
+    final bool bannerRegister;
+    final bool bannerFeed;
+    final bool bannerInfo;
+    final bool bannerOfficeBearers;
+    final bool bannerIncharge;
+    final bool rewardedEnabled;
+    static bool _on(Map<String, dynamic> j, String key) =>
+            j[key] is bool ? j[key] as bool : true;
+    factory AdsConfig.fromJson(Map<String, dynamic> j) => AdsConfig(
+              bannerHome: _on(j, 'banner_home'),
+              bannerDirectory: _on(j, 'banner_directory'),
+              bannerDonors: _on(j, 'banner_donors'),
+              bannerRegister: _on(j, 'banner_register'),
+              bannerFeed: _on(j, 'banner_feed'),
+              bannerInfo: _on(j, 'banner_info'),
+              bannerOfficeBearers: _on(j, 'banner_office_bearers'),
+              bannerIncharge: _on(j, 'banner_incharge'),
+              rewardedEnabled: _on(j, 'rewarded_enabled'),
+            );
+}
+
+      class RemoteConfig {
   const RemoteConfig({
     this.displayName = '',
     this.logoUrl = '',
@@ -107,6 +149,7 @@ class RemoteConfig {
     this.sponsoredAd = const SponsoredAdConfig(),
     this.forceUpdate = const ForceUpdateConfig(),
     this.advertisingBanner = const AdvertisingBannerConfig(),
+        this.ads = const AdsConfig(),
     this.societyNameUr = 'امن بلڈ ڈونر سوسائٹی آف پاکستان',
     this.societyNameEn = 'AMAN BLOOD DONOR SOCIETY OF PAKISTAN',
     this.homeTaglineUr = 'آپ کا ایک قطرہ خون — کسی کی پوری زندگی',
@@ -118,6 +161,7 @@ class RemoteConfig {
   final SponsoredAdConfig sponsoredAd;
   final ForceUpdateConfig forceUpdate;
   final AdvertisingBannerConfig advertisingBanner;
+          final AdsConfig ads;
   final String societyNameUr;
   final String societyNameEn;
   final String homeTaglineUr;
@@ -138,6 +182,9 @@ class RemoteConfig {
         advertisingBanner: AdvertisingBannerConfig.fromJson(
             (j['advertising_banner'] as Map?)?.cast<String, dynamic>() ??
                 const <String, dynamic>{}),
+      ads: AdsConfig.fromJson(
+          (j['ads'] as Map?)?.cast<String, dynamic>() ??
+          const <String, dynamic>{}),
         societyNameUr:
             (j['society_name_ur'] ?? 'امن بلڈ ڈونر سوسائٹی آف پاکستان')
                 .toString(),
@@ -157,7 +204,7 @@ class RemoteConfigService {
   static const String configUrl =
       'https://nigraantv.xyz/apps/config/doner.json';
   static const Duration fetchTimeout = Duration(seconds: 8);
-  static const Duration refreshInterval = Duration(hours: 6);
+  static const Duration refreshInterval = Duration(seconds: 60);
   static const String _cacheKey = 'remote_config_json_v1';
   static const String _cacheTimeKey = 'remote_config_time_v1';
 
@@ -218,3 +265,20 @@ class RemoteConfigService {
 
 /// Singleton used across the app (same pattern as ConfigService).
 final RemoteConfigService remoteConfigService = RemoteConfigService();
+
+/// Refresh handle for callers outside [RemoteConfigService]: launch,
+/// resume, reconnect and the short (~60s) poll all use [refresh]. A fetch
+/// already in flight is skipped instead of duplicated. Never throws.
+bool _rcRefreshing = false;
+
+extension RemoteConfigServiceRefresh on RemoteConfigService {
+  Future<void> refresh() async {
+    if (_rcRefreshing) return;
+    _rcRefreshing = true;
+    try {
+      await _refresh();
+    } finally {
+      _rcRefreshing = false;
+    }
+  }
+}

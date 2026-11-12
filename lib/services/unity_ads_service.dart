@@ -26,6 +26,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:unity_ads_plugin/unity_ads_plugin.dart';
+import 'remote_config_service.dart';
 
 class UnityAdsService {
   static const String gameId = '800418043';
@@ -194,6 +195,32 @@ class UnityAdsService {
     }
   }
 
+  
+  /// One simple opt-in rewarded helper any screen can call.
+  ///
+  /// Only offers/shows when the remote-config rewarded_enabled zone is
+  /// true; otherwise it calls onFail/onDone immediately and shows
+  /// nothing. onReward runs only when the user watched the full ad;
+  /// onFail runs when the ad was skipped or failed; onDone always
+  /// runs at the end. Never throws, never shows an error popup.
+    static Future<void> showRewardedVideo({
+          required void Function() onReward,
+          void Function()? onFail,
+          void Function()? onDone,
+    }) async {
+          if (!remoteConfigService.config.ads.rewardedEnabled) {
+                  onFail?.call();
+                  onDone?.call();
+                  return;
+          }
+          final UnityAdResult result = await showRewardedAd();
+          if (result == UnityAdResult.completed) {
+                  onReward();
+          } else {
+                  onFail?.call();
+          }
+          onDone?.call();
+    }
   // ================= INTERSTITIAL =================
 
   static Future<void> _loadInterstitial() async {
@@ -345,4 +372,29 @@ class _UnityBannerAdWidgetState extends State<UnityBannerAdWidget> {
       ),
     );
   }
+}
+
+
+/// A Unity banner slot gated by one per-zone remote-config switch.
+///
+/// The [zone] selector reads the zone from the current remote config
+/// (e.g. `(ads) => ads.bannerHome`). When the zone is off the slot
+/// renders nothing (zero height); when it is on, the inner
+/// [UnityBannerAdWidget] renders the banner and itself shrinks to
+/// nothing while loading or on failure. Rebuilds automatically when
+/// the remote config refreshes. Place it in a quiet bottom slot -
+/// never over content, never blocking a button.
+class ZonedUnityBanner extends StatelessWidget {
+    const ZonedUnityBanner({super.key, required this.zone});
+    final bool Function(AdsConfig) zone;
+    @override
+    Widget build(BuildContext context) {
+          return ValueListenableBuilder<RemoteConfig>(
+                  valueListenable: remoteConfigService.notifier,
+                  builder: (BuildContext context, RemoteConfig config, _) {
+                            if (!zone(config.ads)) return const SizedBox.shrink();
+                            return const UnityBannerAdWidget();
+                  },
+                );
+    }
 }

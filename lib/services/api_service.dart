@@ -4,7 +4,7 @@
 /// (moved 31 Oct 2026; the old doner-donor-society host is retired.)
 /// Contract (owned by the Worker, not this app):
 ///   GET  /api/donors        public: name/group/province/district/area/
-///                          address/ts only — NO phone, NO photo.
+///                          address/ts + photo (Worker v2) — NO phone.
 ///   POST /api/donors        name/phone/province/district/area/address/group
 ///                          (immediately public, phone never shown publicly).
 ///   GET  /api/feed          public, newest first.
@@ -28,6 +28,7 @@ import 'dart:io';
 
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../data.dart';
 
 /// Society API base (live, verified 31 Oct 2026).
 const String societyApiBase =
@@ -54,6 +55,7 @@ class PublicDonor {
     required this.district,
     required this.area,
     required this.address,
+      this.photo = '',
     required this.ts,
   });
 
@@ -63,6 +65,7 @@ class PublicDonor {
   final String district;
   final String area;
   final String address;
+    final String photo;
   final String ts;
 
   factory PublicDonor.fromJson(Map<String, dynamic> j) => PublicDonor(
@@ -73,6 +76,7 @@ class PublicDonor {
         area: _s(j['area']),
         address: _s(j['address']),
         ts: _s(j['ts'] ?? j['createdAt'] ?? j['date']),
+      photo: _s(j['photo'] ?? j['photoUrl'] ?? j['image']),
       );
 }
 
@@ -86,6 +90,7 @@ class AdminDonor extends PublicDonor {
     required super.area,
     required super.address,
     required super.ts,
+      super.photo,
     required this.phone,
   });
 
@@ -99,6 +104,7 @@ class AdminDonor extends PublicDonor {
         area: _s(j['area']),
         address: _s(j['address']),
         ts: _s(j['ts'] ?? j['createdAt'] ?? j['date']),
+      photo: _s(j['photo'] ?? j['photoUrl'] ?? j['image']),
         phone: _s(j['phone']),
       );
 }
@@ -663,3 +669,183 @@ class PickedPhoto {
   final bool cancelled;
 }
 
+
+/// A district in-charge, as returned by GET /api/incharges/:district.
+/// Public card data only — name + designation + photo. NEVER a phone
+/// number: in-charge phone numbers are admin-only.
+class DistrictIncharge {
+  const DistrictIncharge({
+    required this.district,
+    required this.name,
+    required this.designation,
+    this.photo = '',
+  });
+  final String district;
+  final String name;
+  final String designation;
+  final String photo;
+  factory DistrictIncharge.fromJson(
+    Map<String, dynamic> j, {
+    String district = '',
+  }) =>
+      DistrictIncharge(
+        district: _s(j['district'] ?? j['city'] ?? district),
+        name: _s(j['name']),
+        designation:
+            _s(j['designation'] ?? j['post'] ?? j['title'] ?? j['role']),
+        photo: _s(j['photo'] ?? j['photoUrl'] ?? j['image']),
+      );
+}
+
+/// One office-bearer, as returned by GET /api/office-bearers. Posts are
+/// data-driven from the API — never hardcoded here or in the UI.
+class OfficeBearer {
+  const OfficeBearer({
+    required this.post,
+    required this.name,
+    this.photo = '',
+    this.phone = '',
+  });
+  final String post;
+  final String name;
+  final String photo;
+  final String phone;
+  factory OfficeBearer.fromJson(Map<String, dynamic> j) => OfficeBearer(
+        post: _s(j['post'] ?? j['designation'] ?? j['title'] ?? j['role']),
+        name: _s(j['name']),
+        photo: _s(j['photo'] ?? j['photoUrl'] ?? j['image']),
+        phone: _s(j['phone']),
+      );
+  /// Only the founder's phone number is public — never any other post's.
+  bool get showPhone =>
+      phone.isNotEmpty && post.toLowerCase().contains('founder');
+}
+
+/// In-charge + office-bearers endpoints (Worker v2). Same timeouts as
+/// [ApiService]: connect 15s, GET 20s, POST 25s.
+class InchargeApi {
+  /// GET /api/incharges/:district — public, no phone. The Urdu district
+  /// name is translated to the Worker's English district name first.
+  /// Returns null when the district has no in-charge or is offline.
+  static Future<DistrictIncharge?> fetchIncharge(String districtUrdu) async {
+    final String district = districtEnglishName(districtUrdu);
+    final ApiResult<Map<String, dynamic>?> r = await ApiService._get(
+      '/api/incharges/${Uri.encodeComponent(district)}',
+    );
+    if (!r.ok || r.data == null) return null;
+    Object? raw = r.data!['incharge'] ?? r.data!['data'];
+    if (raw is! Map<String, dynamic>) raw = r.data;
+    final DistrictIncharge incharge = DistrictIncharge.fromJson(
+      raw as Map<String, dynamic>,
+      district: district,
+    );
+    return incharge.name.isEmpty ? null : incharge;
+  }
+
+  /// GET /api/office-bearers — public list of ALL posts, data-driven.
+  /// Called WITHOUT showPhone, so the server sends no phone numbers.
+  static Future<List<OfficeBearer>> fetchOfficeBearers() async {
+    final ApiResult<Map<String, dynamic>?> r =
+        await ApiService._get('/api/office-bearers');
+    if (!r.ok || r.data == null) return const [];
+    final Map<String, dynamic> data = r.data!;
+    Object? raw = data['_list'];
+    if (raw is! List) {
+      for (final String key in const [
+        'officeBearers',
+        'office_bearers',
+        'bearers',
+        'data',
+        'items',
+      ]) {
+        if (data[key] is List) {
+          raw = data[key];
+          break;
+        }
+      }
+    }
+    if (raw is! List) return const [];
+    return raw
+        .whereType<Map<String, dynamic>>()
+        .map(OfficeBearer.fromJson)
+        .where((OfficeBearer b) => b.name.isNotEmpty)
+        .toList();
+  }
+
+  /// GET /api/incharge/donors — the logged-in in-charge's own district.
+  static Future<ApiResult<List<PublicDonor>>> fetchMyDonors() async {
+    final ApiResult<Map<String, dynamic>?> r = await ApiService._get(
+      '/api/incharge/donors',
+      headers: await ApiService._authHeaders(),
+    );
+    if (!r.ok) return ApiResult.err(r.error);
+    return ApiResult.ok(ApiService._listOf(r, PublicDonor.fromJson));
+  }
+
+  /// POST /api/incharge/donors — the district is FORCED server-side to
+  /// the in-charge's own district; the client sends it only so the
+  /// request stays readable. [photoBase64] is the raw base64 of a ~120px
+  /// JPEG (1-10 KB); the server cap is 30k chars, enforced here too.
+  static Future<ApiResult<void>> submitDonor({
+    required String name,
+    required String phone,
+    required String province,
+    required String district,
+    required String area,
+    required String address,
+    required String group,
+    String? photoBase64,
+  }) async {
+    if (photoBase64 != null && photoBase64.length > 28000) {
+      return const ApiResult.err(
+        'تصویر بہت بڑی ہے — چھوٹی تصویر منتخب کریں۔',
+      );
+    }
+    final Map<String, dynamic> body = <String, dynamic>{
+      'name': name,
+      'phone': phone,
+      'province': province,
+      'district': district,
+      'area': area,
+      'address': address,
+      'group': group,
+    };
+    if (photoBase64 != null && photoBase64.isNotEmpty) {
+      body['photo'] = 'data:image/jpeg;base64,$photoBase64';
+    }
+    return ApiService._post(
+      '/api/incharge/donors',
+      body,
+      headers: await ApiService._authHeaders(),
+      unauthorizedMessage: 'لاگ اِن ضروری ہے',
+    );
+  }
+
+  /// Picks a TINY donor photo: ~120px JPEG, quality ~50 — typically
+  /// 1-10 KB, always well under the server's 30k-char cap. Same
+  /// [PickedPhoto] result type as [ApiService.pickPhoto].
+  static Future<PickedPhoto> pickTinyPhoto(ImageSource source) async {
+    try {
+      final ImagePicker picker = ImagePicker();
+      final XFile? file = await picker.pickImage(
+        source: source,
+        maxWidth: 120,
+        maxHeight: 120,
+        imageQuality: 50,
+      );
+      if (file == null) return const PickedPhoto.cancelled();
+      final Uint8List bytes = await file.readAsBytes();
+      final String b64 = base64Encode(bytes);
+      if (b64.length > 28000) {
+        return const PickedPhoto.err(
+          'تصویر بہت بڑی ہے — چھوٹی تصویر منتخب کریں۔',
+        );
+      }
+      return PickedPhoto.ok(b64);
+    } catch (_) {
+      return const PickedPhoto.err(
+        'تصویر نہیں لی جا سکی۔ کیمرہ/گیلری کی اجازت چیک کریں۔',
+      );
+    }
+  }
+}
