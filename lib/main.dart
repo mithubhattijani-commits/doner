@@ -77,8 +77,8 @@ const String centralWa = '923004927940';
 const String spokesmanDisplay = '0309 0808180';
 const String spokesmanTel = '+923090808180';
 const String spokesmanWa = '923090808180';
-const String societyName = 'امن بلڈ ڈونر سوسائٹی آف پاکستان';
-const String societyNameEn = 'AMAN BLOOD DONOR SOCIETY OF PAKISTAN';
+String get societyName => remoteConfigService.config.societyNameUr.trim().isNotEmpty ? remoteConfigService.config.societyNameUr : 'امن بلڈ ڈونر سوسائٹی آف پاکستان';
+String get societyNameEn => remoteConfigService.config.societyNameEn.trim().isNotEmpty ? remoteConfigService.config.societyNameEn : 'AMAN BLOOD DONOR SOCIETY OF PAKISTAN';
 
 Future<void> callNumber(String tel) async {
   final uri = Uri(scheme: 'tel', path: tel);
@@ -973,14 +973,14 @@ class _HomeTabState extends State<HomeTab> {
           ),
         ),
         const SizedBox(height: 12),
-        const Text(
-          'آپ کا ایک قطرہ خون — کسی کی پوری زندگی',
+        Text(
+          remoteConfigService.config.homeTaglineUr.trim().isNotEmpty ? remoteConfigService.config.homeTaglineUr : 'آپ کا ایک قطرہ خون — کسی کی پوری زندگی',
           textAlign: TextAlign.center,
           style: TextStyle(fontSize: 21, fontWeight: FontWeight.w900),
         ),
         const SizedBox(height: 4),
-        const Text(
-          '🩸 خون عطیہ کریں، زندگیاں بچائیں 🩸',
+        Text(
+          remoteConfigService.config.homeTaglineEn.trim().isNotEmpty ? remoteConfigService.config.homeTaglineEn : '🩸 خون عطیہ کریں، زندگیاں بچائیں 🩸',
           textAlign: TextAlign.center,
           style: TextStyle(
               fontSize: 16,
@@ -4327,15 +4327,12 @@ class _InfoTabState extends State<InfoTab> {
             padding: const EdgeInsets.all(16),
             child: Column(
               children: [
-                ClipOval(
-                  child: Image.asset('assets/logo.jpg',
-                      width: 64, height: 64, fit: BoxFit.cover),
-                ),
+                remoteLogo(size: 64),
                 const SizedBox(height: 8),
-                const Text(societyName,
+                Text(societyName,
                     style: TextStyle(
                         color: Colors.white, fontWeight: FontWeight.w800)),
-                const Directionality(
+                Directionality(
                   textDirection: TextDirection.ltr,
                   child: Text(societyNameEn,
                       style: TextStyle(color: Colors.white54, fontSize: 12)),
@@ -5207,10 +5204,10 @@ class _FeaturedBoostCardState extends State<_FeaturedBoostCard> {
 class AdvertisingBanner extends StatelessWidget {
   const AdvertisingBanner({super.key});
 
-  static const String _waUrl = 'https://wa.me/923090808180';
+  // WhatsApp URL comes from Remote Config (advertising_banner.whatsapp_url).
 
   Future<void> _openWhatsApp() async {
-    final Uri uri = Uri.parse(_waUrl);
+    final AdvertisingBannerConfig ad = remoteConfigService.config.advertisingBanner; final Uri uri = Uri.parse(ad.whatsappUrl.isNotEmpty ? ad.whatsappUrl : 'https://wa.me/923090808180');
     if (await canLaunchUrl(uri)) {
       await launchUrl(uri, mode: LaunchMode.externalApplication);
     }
@@ -5218,7 +5215,7 @@ class AdvertisingBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
+        return ValueListenableBuilder<RemoteConfig>(valueListenable: remoteConfigService.notifier, builder: (BuildContext context, RemoteConfig cfg, _) { final AdvertisingBannerConfig ad = cfg.advertisingBanner; if (!ad.enabled) return const SizedBox.shrink(); return Card(
       clipBehavior: Clip.antiAlias,
       elevation: 3,
       shape: RoundedRectangleBorder(
@@ -5242,21 +5239,18 @@ class AdvertisingBanner extends StatelessWidget {
             children: [
               ClipRRect(
                 borderRadius: BorderRadius.circular(12),
-                child: Image.asset(
-                  'assets/jaani_ad_banner.jpg',
-                  width: 84,
-                  height: 112,
-                  fit: BoxFit.cover,
-                ),
+                child: ad.imageUrl.trim().isEmpty
+                  ? Image.asset('assets/jaani_ad_banner.jpg', width: 84, height: 112, fit: BoxFit.cover)
+                  : Image.network(ad.imageUrl, width: 84, height: 112, fit: BoxFit.cover, errorBuilder: (_, _, _) => Image.asset('assets/jaani_ad_banner.jpg', width: 84, height: 112, fit: BoxFit.cover)),
               ),
-              const SizedBox(width: 12),
-              const Expanded(
+              SizedBox(width: 12),
+              Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
-                      'For Advertising',
+                      ad.title.isNotEmpty ? ad.title : 'For Advertising',
                       style: TextStyle(
                         color: Color(0xFFFFD76A),
                         fontSize: 19,
@@ -5265,7 +5259,7 @@ class AdvertisingBanner extends StatelessWidget {
                     ),
                     SizedBox(height: 6),
                     Text(
-                      'Contact Us on WhatsApp:',
+                      ad.subtitle.isNotEmpty ? ad.subtitle : 'Contact Us on WhatsApp:',
                       style: TextStyle(
                           color: Colors.white70, fontSize: 13),
                     ),
@@ -5276,7 +5270,7 @@ class AdvertisingBanner extends StatelessWidget {
                             color: Color(0xFF25D366), size: 18),
                         SizedBox(width: 6),
                         Text(
-                          '03090808180',
+                          ad.phoneDisplay.isNotEmpty ? ad.phoneDisplay : '03090808180',
                           style: TextStyle(
                             color: Colors.white,
                             fontSize: 17,
@@ -5290,9 +5284,9 @@ class AdvertisingBanner extends StatelessWidget {
               ),
             ],
           ),
-        ),
+
       ),
-    );
+    ); }, );
   }
 }
 
