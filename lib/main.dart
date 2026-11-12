@@ -4327,7 +4327,7 @@ class _InfoTabState extends State<InfoTab> {
             padding: const EdgeInsets.all(16),
             child: Column(
               children: [
-                remoteLogo(size: 64),
+                ClipOval(child: remoteLogo(size: 64),),
                 const SizedBox(height: 8),
                 Text(societyName,
                     style: TextStyle(
