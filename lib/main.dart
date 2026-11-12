@@ -2459,12 +2459,20 @@ class DirectoryTab extends StatefulWidget {
   State<DirectoryTab> createState() => _DirectoryTabState();
 }
 
-class _DirectoryTabState extends State<DirectoryTab> {
+class _DirectoryTabState extends State<DirectoryTab> with WidgetsBindingObserver {
   String _level = 'provinces'; // provinces | districts | areas | donors
   String? _province;
   String? _district;
   String? _area;
   String _query = '';
+  // District in-charge (public card: photo + name + designation, never a
+  // phone number) and the areas the LIVE donor list knows about, so a
+  // district whose areas were never shipped still shows its donors.
+  DistrictIncharge? _incharge;
+  bool _inchargeLoading = false;
+  String? _inchargeFor;
+  List<String> _liveAreas = <String>[];
+  Timer? _pollTimer;
 
   /// Blood-group filter for the donor list. Emergencies are about the
   /// RIGHT group, not the whole list — null means "all groups".
@@ -2480,6 +2488,140 @@ class _DirectoryTabState extends State<DirectoryTab> {
 
   String get _areaKey => '$_province|$_district|$_area';
 
+  @override
+  void initState() {
+        super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _pollTimer = Timer.periodic(const Duration(seconds: 60), (_) => _refreshLiveData());}
+
+  @override
+  void dispose() {
+        _pollTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();}
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+        if (state == AppLifecycleState.resumed) _refreshLiveData();}
+
+  /// Re-fetch what the website panel may have changed: the in-charge card
+  /// and the live area list while an areas list is open, or the live donors
+  /// of the area currently shown. Silent — nothing flashes on failure.
+  void _refreshLiveData() {
+          if (!mounted) return;
+    if (_level == 'areas' && _district != null) {
+              _loadIncharge(_district!);
+      _loadDistrictAreas(_district!);
+    } else if (_level == 'donors' && _area != null) {
+      _liveCache.remove(_areaKey);
+      _liveRequested.remove(_areaKey);
+      if (mounted) setState(() {});
+  }
+  }
+
+    /// Load the in-charge card for [district] from the Worker. Silent on
+  /// failure (the card just stays hidden).
+  Future<void> _loadIncharge(String district) async {
+        if (_inchargeLoading) return;
+    if (_inchargeFor != district) {
+            _incharge = null;
+      _inchargeFor = district;
+      if (mounted) setState(() {});
+    }
+    _inchargeLoading = true;
+    final DistrictIncharge? got = await InchargeApi.fetchIncharge(district);
+    if (!mounted) return;
+    _inchargeLoading = false;
+    if (_inchargeFor == district) {
+              _incharge = got;
+      setState(() {});
+    }
+  }
+
+    /// Areas the LIVE donor list knows for [district] (the Worker returns all
+  /// public donors; this collects their distinct areas). Lets a district
+  /// whose areas the app never shipped still show its real donors.
+  Future<void> _loadDistrictAreas(String district) async {
+        final ApiResult<List<PublicDonor>> r = await ApiService.fetchPublicDonors();
+    if (!mounted) return;
+    if (_district != district) return;
+    final List<String> found = <String>[];
+    if (r.ok && r.data != null) {
+            for (final PublicDonor d in r.data!) {
+                      if (d.province == _province && d.district == district && d.area.isNotEmpty && !found.contains(d.area)) found.add(d.area);
+            }
+    }
+    _liveAreas = found;
+    setState(() {});
+  }
+
+
+    /// In-charge photo (data URI / http / raw base64) or the first letter.
+    Widget _inchargePhoto(DistrictIncharge ic) {
+          final Widget fallback = Container(
+                  width: 52,
+                  height: 52,
+                  color: const Color(0xFFC8102E),
+                  alignment: Alignment.center,
+                  child: Text(ic.name.isNotEmpty ? ic.name[0] : '-', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 22)),
+                );
+          final String p = ic.photo;
+          if (p.isEmpty) return ClipOval(child: fallback);
+          try {
+                  if (p.startsWith('data:image')) {
+                            return ClipOval(child: Image.memory(base64Decode(p.split(',').last), width: 52, height: 52, fit: BoxFit.cover));
+                  }
+                  if (p.startsWith('http')) {
+                            return ClipOval(child: Image.network(p, width: 52, height: 52, fit: BoxFit.cover, errorBuilder: (_, _, _) => fallback));
+                  }
+                  return ClipOval(child: Image.memory(base64Decode(p), width: 52, height: 52, fit: BoxFit.cover));
+          } catch (_) {
+                  return ClipOval(child: fallback);
+          }
+    }
+  
+    /// Public in-charge card: photo + name + designation. Never a phone.
+    Widget _inchargeCard() {
+          if (_inchargeLoading && _incharge == null) {
+                  return const Card(
+                            child: Padding(
+                                        padding: EdgeInsets.all(12),
+                                        child: Row(
+                                                      children: [
+                                                                      SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
+                                                                      SizedBox(width: 12),
+                                                                      Expanded(child: Text('انچارج کی معلومات لوڈ ہو رہی ہیں...')),
+                                                                    ],
+                                                    ),
+                                      ),
+                          );
+          }
+          final DistrictIncharge? ic = _incharge;
+          if (ic == null) return const SizedBox.shrink();
+          return Card(
+                  color: const Color(0xFFE8F5E9),
+                  child: Padding(
+                            padding: const EdgeInsets.all(12),
+                            child: Row(
+                                        children: [
+                                                      _inchargePhoto(ic),
+                                                      const SizedBox(width: 12),
+                                                      Expanded(
+                                                                      child: Column(
+                                                                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                                                                        children: [
+                                                                                                            Text(ic.name, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
+                                                                                                            Text(ic.designation.isNotEmpty ? ic.designation : 'ضلعی انچارج', style: const TextStyle(fontSize: 13)),
+                                                                                                            Text('$_district - ضلعی انچارج', style: const TextStyle(fontSize: 12, color: Colors.black54)),
+                                                                                                          ],
+                                                                                      ),
+                                                                    ),
+                                                    ],
+                                      ),
+                          ),
+                );
+    }
+  
   Future<void> _loadLive(String key, String province, String district,
       String area) async {
     if (_liveLoading.contains(key)) return;
@@ -2692,6 +2834,8 @@ class _DirectoryTabState extends State<DirectoryTab> {
                       _area = null;
                       _level = 'areas';
                     });
+                    _loadIncharge(d);
+                    _loadDistrictAreas(d);
                   }),
                 ),
               )).toList()),
@@ -2699,16 +2843,19 @@ class _DirectoryTabState extends State<DirectoryTab> {
       );
     } else if (_level == 'areas') {
       final known = areas[_district!] ?? const <String>[];
+      final List<String> allAreas = <String>[...known, ..._liveAreas.where((a) => !known.contains(a))];
       body = ListView(
         padding: const EdgeInsets.all(16),
         children: [
           _crumbs(),
           const SizedBox(height: 12),
+          _inchargeCard(),
+          const SizedBox(height: 8),
           Text('$_district — علاقہ منتخب کریں:',
               style:
                   const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
           const SizedBox(height: 8),
-          if (known.isEmpty)
+          if (allAreas.isEmpty)
             const Card(
               child: Padding(
                 padding: EdgeInsets.all(16),
@@ -2717,7 +2864,7 @@ class _DirectoryTabState extends State<DirectoryTab> {
               ),
             )
           else
-            ...withNativeAds(known.map((a) => Card(
+            ...withNativeAds(allAreas.map((a) => Card(
                   child: ListTile(
                     title: Text(a,
                         style: const TextStyle(fontWeight: FontWeight.w700)),
@@ -2805,6 +2952,33 @@ class _DirectoryTabState extends State<DirectoryTab> {
       } else {
         shown = base;
       }
+
+      
+        /// Donor photo (data URI / http / raw base64) or the blood-group avatar.
+        Widget donorAvatar(PublicDonor d) {
+              final Widget fallback = CircleAvatar(
+                      backgroundColor: const Color(0xFFC8102E),
+                      foregroundColor: Colors.white,
+                      child: Directionality(
+                                textDirection: TextDirection.ltr,
+                                  child: Text(d.group, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 13)),
+                                ),
+                      );
+              final String p = d.photo;
+              if (p.isEmpty) return fallback;
+              try {
+                      if (p.startsWith('data:image')) {
+                                return ClipOval(child: Image.memory(base64Decode(p.split(',').last), width: 44, height: 44, fit: BoxFit.cover));
+                      }
+                      if (p.startsWith('http')) {
+                                return ClipOval(child: Image.network(p, width: 44, height: 44, fit: BoxFit.cover, errorBuilder: (_, _, _) => fallback));
+                      }
+                      return ClipOval(child: Image.memory(base64Decode(p), width: 44, height: 44, fit: BoxFit.cover));
+              } catch (_) {
+                      return fallback;
+              }
+        }
+      
       return Column(
         children: [
           _groupFilterRow(donors),
@@ -2825,16 +2999,7 @@ class _DirectoryTabState extends State<DirectoryTab> {
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      CircleAvatar(
-                        backgroundColor: const Color(0xFFC8102E),
-                        foregroundColor: Colors.white,
-                        child: Directionality(
-                          textDirection: TextDirection.ltr,
-                          child: Text(d.group,
-                              style: const TextStyle(
-                                  fontWeight: FontWeight.w900, fontSize: 13)),
-                        ),
-                      ),
+                      donorAvatar(d),
                       const SizedBox(width: 10),
                       Expanded(
                         child: Column(
