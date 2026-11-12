@@ -54,7 +54,7 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -170,7 +170,6 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
-    AdService.showAppOpenOnce();
     WidgetsBinding.instance.addObserver(this);
     AppLanguage.notifier.addListener(_onLanguageChanged);
     _refreshTimer = Timer.periodic(const Duration(seconds: 60), (_) => _refreshWebsiteData());

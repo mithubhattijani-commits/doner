@@ -237,7 +237,7 @@ class AuthService {
 }
 
 /// Loads the signed-in account's role + district from GET /api/auth/me
-/// (Authorization: Bearer <token>). Returns null when there is no token or
+/// (Authorization: Bearer `<token>`). Returns null when there is no token or
 /// the call fails. Accepts both `{ok:true, user:{...}}` and a bare user
 /// object, and role/district at the top level or inside `user`. On success
 /// the saved session is refreshed (token unchanged) so the in-charge

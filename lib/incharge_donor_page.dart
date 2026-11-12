@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:image_picker/image_picker.dart';
 
 import 'data.dart';
@@ -498,7 +498,7 @@ class _InchargeDonorPageState extends State<InchargeDonorPage> {
           ),
           const SizedBox(height: 12),
           DropdownButtonFormField<String>(
-            value: _group,
+            initialValue: _group,
             decoration: const InputDecoration(
               labelText: 'بلڈ گروپ',
               border: OutlineInputBorder(),
@@ -518,7 +518,7 @@ class _InchargeDonorPageState extends State<InchargeDonorPage> {
           const SizedBox(height: 12),
           if (areaOptions.isNotEmpty)
             DropdownButtonFormField<String>(
-              value: areaOptions.contains(_areaController.text)
+              initialValue: areaOptions.contains(_areaController.text)
                   ? _areaController.text
                   : null,
               decoration: const InputDecoration(
