@@ -169,7 +169,7 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
 
   @override
   void initState() {
-    super.initState
+    super.initState();
     WidgetsBinding.instance.addObserver(this);
     AppLanguage.notifier.addListener(_onLanguageChanged);
     _refreshTimer = Timer.periodic(const Duration(seconds: 60), (_) => _refreshWebsiteData());
