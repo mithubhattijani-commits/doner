@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 
 import 'services/api_service.dart';
+import 'services/unity_ads_service.dart';
 
 /// Office-bearers page — GET /api/office-bearers.
 ///
@@ -98,6 +99,7 @@ class _OfficeBearersPageState extends State<OfficeBearersPage> {
           ),
         ],
       ),
+      bottomNavigationBar: ZonedUnityBanner(zone: (ads) => ads.bannerOfficeBearers),
       body: _loading && !_loadedOnce
           ? const Center(child: CircularProgressIndicator())
           : _bearers.isEmpty
