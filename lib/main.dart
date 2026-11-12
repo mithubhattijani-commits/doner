@@ -710,7 +710,7 @@ class HomeTab extends StatefulWidget {
   State<HomeTab> createState() => _HomeTabState();
 }
 
-class _HomeTabState extends State<HomeTab> {
+class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   String? _patientGroup;
   List<FeedPost> _feed = [];
   bool _feedLoading = false;
@@ -718,13 +718,26 @@ class _HomeTabState extends State<HomeTab> {
 
   /// SOS urgent requests, stored on-device in SharedPreferences.
   List<SosRequest> _sos = [];
+  Timer? _pollTimer;
   bool _sosLoaded = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _pollTimer = Timer.periodic(const Duration(seconds: 60), (_) => _loadFeed());
     _loadFeed();
     _loadSos();
+  }
+  @override
+  void dispose() {
+      _pollTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+      if (state == AppLifecycleState.resumed) _loadFeed();
   }
 
   Future<void> _loadSos() async {
@@ -1480,16 +1493,29 @@ class SocialFeedTab extends StatefulWidget {
   State<SocialFeedTab> createState() => _SocialFeedTabState();
 }
 
-class _SocialFeedTabState extends State<SocialFeedTab> {
+class _SocialFeedTabState extends State<SocialFeedTab> with WidgetsBindingObserver {
   List<SocialPost> _posts = [];
   bool _loading = false;
   String? _error;
   String? _likingId;
+  Timer? _pollTimer;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _pollTimer = Timer.periodic(const Duration(seconds: 60), (_) => _load());
     _load();
+  }
+  @override
+  void dispose() {
+      _pollTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+      if (state == AppLifecycleState.resumed) _load();
   }
 
   Future<void> _load() async {
@@ -2713,6 +2739,8 @@ class _DirectoryTabState extends State<DirectoryTab> with WidgetsBindingObserver
                 _level = 'areas';
                 _query = '';
               });
+              _loadIncharge(d);
+              _loadDistrictAreas(d);
             }),
           ));
         }
