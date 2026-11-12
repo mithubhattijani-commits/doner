@@ -289,22 +289,22 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
           builder: (context, config, _) {
             final tabs = <Widget>[const HomeTab()];
         final items = <BottomNavigationBarItem>[
-          const BottomNavigationBarItem(icon: Icon(Icons.home), label: 'ہوم'),
+          BottomNavigationBarItem(icon: const Icon(Icons.home), label: AppLanguage.isEnglish ? 'Home' : 'ہوم'),
         ];
         tabs.add(const SocialFeedTab());
-        items.add(const BottomNavigationBarItem(
-            icon: Icon(Icons.dynamic_feed), label: 'سوشل فیڈ'));
+        items.add(BottomNavigationBarItem(
+            icon: const Icon(Icons.dynamic_feed), label: AppLanguage.isEnglish ? 'Social Feed' : 'سوشل فیڈ'));
         if (config.directory) {
           tabs.add(const DirectoryTab());
-          items.add(const BottomNavigationBarItem(
-              icon: Icon(Icons.search), label: 'ڈائریکٹری'));
+          items.add(BottomNavigationBarItem(
+              icon: const Icon(Icons.search), label: AppLanguage.isEnglish ? 'Directory' : 'ڈائیریکٹری'));
         }
         tabs.add(const RegisterTab());
-        items.add(const BottomNavigationBarItem(
-            icon: Icon(Icons.person_add), label: 'ڈونر بنیں'));
+        items.add(BottomNavigationBarItem(
+            icon: const Icon(Icons.person_add), label: AppLanguage.isEnglish ? 'Become a Donor' : 'ڈونر بنیں'));
         tabs.add(const InfoTab());
-        items.add(const BottomNavigationBarItem(
-            icon: Icon(Icons.info), label: 'معلومات'));
+        items.add(BottomNavigationBarItem(
+            icon: const Icon(Icons.info), label: AppLanguage.isEnglish ? 'Info' : 'معلومات'));
         final index = _tab < tabs.length ? _tab : 0;
         final showBanner =
             tabs[index] is HomeTab || tabs[index] is DirectoryTab;
@@ -4213,6 +4213,31 @@ class _InfoTabState extends State<InfoTab> {
       ),
     );
   }
+/// Language switcher: English is the default, Urdu second. The choice
+/// is persisted and applies immediately (HomeShell listens); it also
+/// survives restarts because main() loads it before runApp().
+Widget _languageCard() {
+      final bool en = AppLanguage.isEnglish;
+  return Card(
+      color: const Color(0xFFFFF3E0),
+    child: ListTile(
+      leading: const Icon(Icons.language, color: Color(0xFFC8102E), size: 32),
+    title: const Text('زبان / Language', style: TextStyle(fontWeight: FontWeight.w900)),
+    subtitle: Text(en ? 'English - اردو دستیاب ہے' : 'اردو - English available'),
+      trailing: DropdownButton<String>(
+          value: AppLanguage.code,
+        items: const [
+            DropdownMenuItem(value: 'en', child: Text('English')),
+          DropdownMenuItem(value: 'ur', child: Text('اردو')),
+      ],
+        onChanged: (String? value) {
+                      if (value != null) AppLanguage.setLanguage(value);
+    },
+    ),
+  ),
+);
+}
+    
 
   @override
   Widget build(BuildContext context) {
@@ -4223,6 +4248,8 @@ class _InfoTabState extends State<InfoTab> {
       padding: const EdgeInsets.all(16),
       children: [
         _accountCard(),
+        const SizedBox(height: 8),
+        _languageCard(),
         const SizedBox(height: 8),
         sectionTitle('🩸 میرا عطیہ ریکارڈ'),
         _donationTrackerCard(),
@@ -4334,6 +4361,26 @@ class _InfoTabState extends State<InfoTab> {
         ...config.faq.map((f) => _infoCard('؟', f.q, f.a)),
         const SizedBox(height: 20),
         // Voluntary Unity rewarded ad: "support the society". Purely
+        Card(
+            child: ListTile(
+                leading: const Icon(Icons.people, color: Color(0xFFC8102E)),
+              title: const Text('عہدیداران کی فہرست', style: TextStyle(fontWeight: FontWeight.w900)),
+              subtitle: const Text('Office Bearers — all posts, live from the server'),
+              trailing: const Icon(Icons.arrow_back_ios, size: 16),
+              onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const OfficeBearersPage())),
+          ),
+      ),
+        const SizedBox(height: 8),
+        Card(
+            child: ListTile(
+                leading: const Icon(Icons.badge, color: Color(0xFFC8102E)),
+              title: const Text('انچارج — ڈونر شامل کریں', style: TextStyle(fontWeight: FontWeight.w900)),
+              subtitle: const Text('In-charge login: add donors for your own district'),
+              trailing: const Icon(Icons.arrow_back_ios, size: 16),
+              onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const InchargeDonorPage())),
+          ),
+      ),
+        const SizedBox(height: 8),
         // opt-in, never gates a feature, never blocks a critical flow.
         const UnitySupportCard(),
         const SizedBox(height: 20),
