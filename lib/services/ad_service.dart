@@ -23,8 +23,13 @@ import 'package:material_ui/material_ui.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 
 class AdService {
-  /// MASTER AD KILL-SWITCH (Jaani, 2 Nov 2026): ALL AdMob ads OFF for now.
-  /// Set to true when Jaani orders ads back (then max 1-2 per visit).
+  /// ADMOB KILL-SWITCH (Jaani, 2 Nov 2026): ALL AdMob ads OFF.
+  /// AdMob is NOT the live ad path: the account was never approved and
+  /// the unit IDs below are Google's TEST IDs, so this stays false
+  /// until/unless an approved AdMob account with real unit IDs exists.
+  /// The remote master switch (doner.json "ads.ads_enabled") controls
+  /// the live Unity ads (see UnityAdsService), not AdMob — do NOT wire
+  /// this flag to it, or test interstitials would fire on every tap.
   static const bool adsEnabled = false;
 
   static const String interstitialUnitId =
