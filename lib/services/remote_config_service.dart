@@ -105,6 +105,9 @@ class AdvertisingBannerConfig {
 /// an older config never hides an ad. When a zone is false its banner slot
 /// renders nothing (zero height); when rewarded_enabled is false the opt-in
 /// rewarded buttons stay hidden and the rewarded helper no-ops.
+/// MASTER SWITCH (14 Nov 2026): ads_enabled (default true) gates ALL Unity
+/// ads at once — when false, no Unity ad shows anywhere regardless of the
+/// zones. The user flips it from the admin panel with no new build.
 class AdsConfig {
     const AdsConfig({
           this.bannerHome = true,
@@ -116,6 +119,7 @@ class AdsConfig {
           this.bannerOfficeBearers = true,
           this.bannerIncharge = true,
           this.rewardedEnabled = true,
+          this.adsEnabled = true,
     });
     final bool bannerHome;
     final bool bannerDirectory;
@@ -126,6 +130,7 @@ class AdsConfig {
     final bool bannerOfficeBearers;
     final bool bannerIncharge;
     final bool rewardedEnabled;
+    final bool adsEnabled;
     static bool _on(Map<String, dynamic> j, String key) =>
             j[key] is bool ? j[key] as bool : true;
     factory AdsConfig.fromJson(Map<String, dynamic> j) => AdsConfig(
@@ -138,6 +143,7 @@ class AdsConfig {
               bannerOfficeBearers: _on(j, 'banner_office_bearers'),
               bannerIncharge: _on(j, 'banner_incharge'),
               rewardedEnabled: _on(j, 'rewarded_enabled'),
+              adsEnabled: _on(j, 'ads_enabled'),
             );
 }
 
