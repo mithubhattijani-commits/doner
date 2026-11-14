@@ -7,7 +7,7 @@
 //   app, not an earning app. No ledger, no Supabase involvement.
 //
 // Respect rules (blood-donation purpose):
-// - Rewarded is VOLUNTARY only: a "support the society" button in the
+// - Rewarded is VOLUNTARY only: a "support the app" button in the
 //   Info tab. Never gates any feature, never blocks a critical flow.
 // - Interstitial is STRICTLY frequency-capped (Jaani, 3 Nov 2026):
 //   MAX 1 ad per visitor per 2 hours, persisted in SharedPreferences
@@ -37,10 +37,14 @@ class UnityAdsService {
   /// Production mode (testMode = false): real ads are served.
   static const bool testMode = false;
 
-  /// MASTER AD SWITCH (Jaani, 3 Nov 2026): Unity ads ON with STRICT
-  /// frequency cap — max 1 interstitial per visitor per 2 hours.
-  /// Set to false only on Jaani's explicit order to turn ads off.
-  static const bool adsEnabled = true;
+  /// MASTER AD SWITCH (Jaani, 3 Nov 2026; remote-driven 14 Nov 2026):
+  /// Unity ads ON with STRICT frequency cap — max 1 interstitial per
+  /// visitor per 2 hours. Read live from the website admin panel
+  /// (doner.json "ads.ads_enabled", default true = fail-open): the user
+  /// turns ALL Unity ads off from the panel with no new build. The
+  /// per-zone switches gate individual screens on top of this.
+  static bool get adsEnabled =>
+      remoteConfigService.config.ads.adsEnabled;
 
   static bool _initialized = false;
   static bool _initFailed = false;
@@ -153,7 +157,7 @@ class UnityAdsService {
     }
   }
 
-  /// Show the rewarded video ad (voluntary "support the society" flow).
+  /// Show the rewarded video ad (voluntary "support the app" flow).
   ///
   /// Returns [UnityAdResult.completed] when the user watched the full ad,
   /// [UnityAdResult.skipped] when they skipped early, [UnityAdResult.failed]
@@ -198,8 +202,9 @@ class UnityAdsService {
   
   /// One simple opt-in rewarded helper any screen can call.
   ///
-  /// Only offers/shows when the remote-config rewarded_enabled zone is
-  /// true; otherwise it calls onFail/onDone immediately and shows
+  /// Only offers/shows when the master ads_enabled switch is on AND the
+  /// remote-config rewarded_enabled zone is true; otherwise it calls
+  /// onFail/onDone immediately and shows
   /// nothing. onReward runs only when the user watched the full ad;
   /// onFail runs when the ad was skipped or failed; onDone always
   /// runs at the end. Never throws, never shows an error popup.

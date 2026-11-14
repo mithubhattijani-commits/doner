@@ -109,7 +109,7 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await AdService.init();
   // Unity Ads (revenue): best-effort, never blocks startup.
-  // Rewarded = voluntary "support the society" in the Info tab;
+  // Rewarded = voluntary "support the app" in the Info tab;
   // Interstitial = frequency-capped on non-critical tab switches.
   unawaited(UnityAdsService.init());
   await ConfigService.loadFromCache();
@@ -4587,7 +4587,7 @@ Widget _languageCard() {
         sectionTitle('عام سوالات'),
         ...config.faq.map((f) => _infoCard('؟', f.q, f.a)),
         const SizedBox(height: 20),
-        // Voluntary Unity rewarded ad: "support the society". Purely
+        // Voluntary Unity rewarded ad: "support the app". Purely
         Card(
             child: ListTile(
                 leading: const Icon(Icons.people, color: Color(0xFFC8102E)),
@@ -5241,9 +5241,10 @@ class _EligibilityScreenState extends State<EligibilityScreen> {
 }
 
 /// Voluntary Unity rewarded ad card: "watch an ad to support the
-/// society". Purely opt-in — never gates a feature, never blocks a
+/// app". Purely opt-in — never gates a feature, never blocks a
 /// critical flow. Tapping plays a rewarded video; completing it shows
-/// a thank-you (the revenue goes to the society's Unity account).
+/// a thank-you (the revenue goes to the app builder's Unity account —
+/// the app was built for the society free of charge).
 class UnitySupportCard extends StatefulWidget {
   const UnitySupportCard({super.key});
 
@@ -5293,13 +5294,13 @@ class _UnitySupportCardState extends State<UnitySupportCard> {
         child: Column(
           children: [
             const Text(
-              '📺 سوسائٹی کی مدد کریں',
+              '📺 ایپ کو سپورٹ کریں',
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
             ),
             const SizedBox(height: 6),
             const Text(
-              'ایک مختصر اشتہار دیکھیں — اس سے حاصل ہونے والی آمدنی '
-              'امن بلڈ ڈونر سوسائٹی کے کام میں استعمال ہوگی۔ '
+              'ایک مختصر اشتہار دیکھیں — اس سے ایپ کی دیکھ بھال اور '
+              'بہتری میں مدد ملے گی۔ '
               'یہ مکمل طور پر اختیاری ہے۔',
               textAlign: TextAlign.center,
               style: TextStyle(color: Colors.black54),
