@@ -1,4 +1,4 @@
-// DONER 1.0.0 — fork of the Aman Blood Donor app 1.3.4 source, plus the
+successfully downloaded text file (SHA: b55ab385efcd2e6c430261605b4d04f8d55ac1f7)// DONER 1.0.0 — fork of the Aman Blood Donor app 1.3.4 source, plus the
 // social home feed (SocialFeedTab below). App label "Doner", package
 // com.doner.app. The society itself is unchanged: same directory,
 // same society facts, same public central contact number.
@@ -5294,7 +5294,7 @@ class _UnitySupportCardState extends State<UnitySupportCard> {
         child: Column(
           children: [
             const Text(
-              '📺 ایپ کو سپورٹ کریں',
+              'ایپ کو بہتر بنانے کے لیے سپورٹ کریں',
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
             ),
             const SizedBox(height: 6),
